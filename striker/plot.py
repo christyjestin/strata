@@ -62,10 +62,10 @@ right_shoulder_positions_blue = []
 left_shoulder_positions_blue = []
 
 for _ in range(n):
-    box_positions_red.append(fight.a.torso_vertices())
-    head_positions_red.append(fight.a.head_vertices())
-    box_positions_blue.append(fight.b.torso_vertices())
-    head_positions_blue.append(fight.b.head_vertices())
+    box_positions_red.append(fight.a.torso_vertices)
+    head_positions_red.append(fight.a.head_vertices)
+    box_positions_blue.append(fight.b.torso_vertices)
+    head_positions_blue.append(fight.b.head_vertices)
 
     right_knee_positions_red.append(fight.a.right_knee)
     right_foot_positions_red.append(fight.a.right_foot)
