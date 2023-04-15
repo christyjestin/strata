@@ -1,4 +1,5 @@
 from collections import namedtuple
+from enum import Enum
 
 GameState = namedtuple('GameState', ['stop', 'win'])
 
@@ -9,6 +10,12 @@ N_DIMS = 2
 
 CHASER_XDOT_LIMIT = 0.5
 RUNNER_XDOT_LIMIT = CHASER_XDOT_LIMIT * 1.5
+
+class Mode(Enum):
+    NORMAL = 1
+    ATTACKING = 2
+    SHIELDING = 3
+    STUNNED = 4
 
 class Game:
     arena_length = 100
