@@ -47,13 +47,17 @@ class Game:
         if self.hero.health <= 0:
             return GameState(stop = True, win = False)
         return GameState(stop = False, win = True)
+    
+
+    # check for overlap in damage boxes between hero and adversary, change their health accordingly
+    def calculate_damage()
 
 
 
 class Hero:
-    # keep it square?
-    # Might want to make bosses nonsquare!!
-    # oh right this is not the arena
+
+    mode = Mode.NORMAL
+   
     def __init__(self, hitbox_width, hitbox_height, movement_speed, rotation_speed, max_health, position):
         self.hitbox_width = hitbox_width
         self.hitbox_height = hitbox_height
@@ -62,11 +66,25 @@ class Hero:
         self.position = position
         self.movement_speed = movement_speed
         self.rotation_speed = rotation_speed
+
+        self.Adversary = None
+
+        # Damage box is, relative to player, where the player is doing damage and magnitude of damage
+        self.damagebox = None
+
+
+
+    def one_step()
+        
+
+    # Changes Damage box to the corresponding attack
+    def select_attack()
+
 
 
 
 class Adversary:
-    def __init__(self, hitbox_width, hitbox_height, movement_speed, rotation_speed, max_health, position):
+    def __init__(self, hitbox_width, hitbox_height, movement_speed, rotation_speed, max_health, position, attackloop):
         self.hitbox_width = hitbox_width
         self.hitbox_height = hitbox_height
         self.max_health = max_health
@@ -74,5 +92,24 @@ class Adversary:
         self.position = position
         self.movement_speed = movement_speed
         self.rotation_speed = rotation_speed
+
+        self.loop = attackloop
+        self.Hero = None
+
+        # Damage box is, relative to player, where the player is doing damage and magnitude of damage
+        self.damagebox = None
+
+
+    # Changes Damage box to the corresponding attack. 
+    def select_attack()
+
+    def one_step()
+        # Chase Player until at a certain range
+
+        # Use attack loop unless next move is ranged, then do ranged instead of chasing
+
+
+
+        # If loop requires sequence, perform sequence 
 
 
