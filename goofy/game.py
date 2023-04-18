@@ -17,6 +17,16 @@ class Mode(Enum):
     SHIELDING = 3
     STUNNED = 4
 
+class HeroAttacks(Enum):
+    RANGESTAB = 1
+    SHORTSWEEP = 2
+
+
+class AdversaryAttacks(Enum):
+    RANGESTAB = 1
+    SHORTSWEEP = 2
+
+
 class Game:
     arena_length = 100
     arena_width = 100
@@ -50,7 +60,27 @@ class Game:
     
 
     # check for overlap in damage boxes between hero and adversary, change their health accordingly
-    def calculate_damage()
+    # Currently ignoring defending
+    # TAKE THE CONVENTION THAT  POSITION IS TOP LEFT OF HIT BOX!!!
+    def calculate_damage(self):
+        
+        damage_box_hero = self.hero.damagebox
+        damage_box_adversary = self.adversary.damagebox
+
+        hero_pos = self.hero.position
+        adversary_pos = self.adversary.position
+
+        # Hero takes damage
+        if ():
+            self.hero.health -= damage_box_adversary['damage']
+
+
+        # Adversary takes damage
+        if ():
+            self.adversary.health -= damage_box_hero['damage']
+
+
+
 
 
 
@@ -74,11 +104,11 @@ class Hero:
 
 
 
-    def one_step()
+    def one_step(self):
         
 
     # Changes Damage box to the corresponding attack
-    def select_attack()
+    def select_attack(self):
 
 
 
@@ -101,9 +131,9 @@ class Adversary:
 
 
     # Changes Damage box to the corresponding attack. 
-    def select_attack()
+    def select_attack(self):
 
-    def one_step()
+    def one_step(self):
         # Chase Player until at a certain range
 
         # Use attack loop unless next move is ranged, then do ranged instead of chasing
