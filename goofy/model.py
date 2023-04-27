@@ -1,11 +1,16 @@
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch import nn
+
+# TODO: double check imports and add type hints
 
 class AdaptiveEvolver(nn.Module):
     # TODO: add checks on init parameters
     def __init__(self):
+        self.state_dim = None
+        self.policy_dim = None
+        self.strategy_dim = None
+
         # M: memory module that distills the opponent's strategy into a latent vector
         self.memory = None
         # c_t: latent vector that serves as a running tally of adversary's strategy
@@ -19,7 +24,7 @@ class AdaptiveEvolver(nn.Module):
         # takes the partial next state and the chosen action as input
         self.hero_evolver = None
         # V: predicts the value of the current state over a finite time horizon h given adversary's strategy
-        self.value = None
+        self.value_predictor = None
         # h: time horizon over which we want to maximize value
         self.time_horizon = None
         # k: length of state/action trajectory that is considered (not only including initial state)
@@ -30,12 +35,24 @@ class AdaptiveEvolver(nn.Module):
         self.branching_number = None
         # f: the number of actions considered for the very first action is bloom factor x trajectory count
         self.bloom_factor = None
-        self.state_dim = None
-        self.policy_dim = None
 
+        self.adversary_evolver_loss = None
+        self.hero_evolver_loss = None
+        self.value_predictor_loss = None
 
+        # need a lambda value for each loss that involves the strategy vector since this means that the loss backprops
+        # to the memory module and we need a way to weight the different losses that are relevant to the memory module
+        self.adversary_evolver_lambda = None
+        self.value_predictor_lambda = None
+        self.policy_predictor_lambda = None
+
+    # TODO: ensure that computational graph isn't being built; in particular that the no grad decorator also
+    # applies to the nested forward calls
+    # produces an action a_t when given a state s_t
+    @torch.no_grad() # backward pass only happens at the end of the game so no need to build computational graph here
     def forward(self, s_t: torch.Tensor):
         assert s_t.shape == (self.state_dim,)
+
         # only update adversary strategy with the true current state s_t
         self.adversary_strategy = self.memory(self.adversary_strategy, s_t)
 
@@ -62,6 +79,7 @@ class AdaptiveEvolver(nn.Module):
             candidate_next_states = torch.empty((self.trajectory_count, self.branching_number, self.state_dim))
             candidate_values = torch.empty((self.trajectory_count, self.branching_number))
 
+            # TODO: consider vectorizing this loop or at least the adversary evolver and policy predictor steps
             # generate b new nodes for each of the candidate trajectories
             for state_index in range(self.trajectory_count):
                 # same as first level of tree search but the value of b and the remaining time horizon have changed
@@ -93,8 +111,8 @@ class AdaptiveEvolver(nn.Module):
         candidate_next_states = self.hero_evolver(partial_next_s, candidate_actions) # shape is b x s
         # compute value accumulated so far by comparing each next state to the initial state
         v_accumulated = self.reward(initial_s, candidate_next_states) # shape is (b,)
-        # project the value of each state over the remaining time horizon
-        v_projected = self.value(self.adversary_strategy, candidate_next_states, remaining_time_horizon) # shape is (b,)
+        # project the value of each state over the remaining time horizon; shape is (b,)
+        v_projected = self.value_predictor(self.adversary_strategy, candidate_next_states, remaining_time_horizon)
         candidate_values = v_accumulated + v_projected
         return candidate_next_states, candidate_actions, candidate_values
 
@@ -114,5 +132,41 @@ class AdaptiveEvolver(nn.Module):
         assert s.shape[1] == self.state_dim and len(s.shape) == 2
         pass
 
-    def backward(self, s):
+    def batch_value_prediction(self, strategy_history, state_history):
+        # TODO: in likely event of batched refactoring, move asserts to backward function
+        n = strategy_history.shape[0]
+        assert strategy_history.shape == (n, self.strategy_dim)
+        assert state_history.shape == (n, self.state_dim)
+        v_projected = torch.empty((n,), requires_grad = True)
+        # TODO: make a decision about whether to vectorize this loop
+        for i in range(n):
+            v_projected[i] = self.value_predictor(strategy_history[i], state_history[i:i+1], remaining_time_horizon = n - i)
+        return v_projected
+
+    def compute_log_prob(self, pi, a):
         pass
+
+    def backward(self, s, partial_next_s, a, next_s, reward_history, strategy_history, state_history):
+        # TODO: refactor for backprop on full game instead of single step
+        # TODO: add asserts
+        # TODO: review all places where strategy enters the equation
+        next_s_pred = self.hero_evolver(partial_next_s, torch.unsqueeze(a, 0))
+        partial_next_s_pred = self.adversary_evolver(self.adversary_strategy, s)
+        v_pred = self.batch_value_prediction(strategy_history, state_history)
+        search_policy = self.policy_predictor(self.adversary_strategy, partial_next_s)
+
+        # cumulatively sum the rewards to find the value over increasing longer time horizons
+        v = torch.tensor(np.cumsum(np.flip(reward_history)))
+
+        hero_loss = self.hero_evolver_loss(next_s_pred, next_s)
+        # multiply all losses that involve strategy (and in turn the memory module) by corresponding lambda
+        adversary_loss = self.adversary_evolver_lambda * self.adversary_evolver(partial_next_s_pred, partial_next_s)
+        # TODO: consider weighting longer time horizon predictions less in the loss because it's harder to see far out
+        # into the future; if you do this, the lower weights should only apply to the very longest time horizons
+        value_loss = self.value_predictor_lambda * self.value_predictor_loss(v_pred, v)
+        policy_loss = self.policy_predictor_lambda * -self.compute_log_prob(search_policy, a)
+
+        hero_loss.backward()
+        adversary_loss.backward()
+        value_loss.backward()
+        policy_loss.backward()
