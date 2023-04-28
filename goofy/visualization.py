@@ -1,5 +1,6 @@
 import pygame
 import math
+from game import *
 
 
 # initialize PyGame
@@ -33,40 +34,39 @@ player_y = HEIGHT // 2 - PLAYER_SIZE // 2
 adversary_x = WIDTH // 3 - PLAYER_SIZE // 2
 adversary_y = HEIGHT // 2 - PLAYER_SIZE // 2
 
-player_body = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE))
-player_body.fill(BLUE)
+player_im = pygame.image.load("hero.png")
 
-adversary_body = pygame.Surface((ADVERSARY_SIZE, ADVERSARY_SIZE))
-adversary_body.fill(RED)
+adversary_im = pygame.image.load("adversary.png")
 
+def blitRotate(surf, image, pos, originPos, angle):
 
-angle = 0
+    # offset from pivot to center
+    image_rect = image.get_rect(topleft = (pos[0] - originPos[0], pos[1]-originPos[1]))
+    offset_center_to_pivot = pygame.math.Vector2(pos) - image_rect.center
+    
+    # roatated offset from pivot to center
+    rotated_offset = offset_center_to_pivot.rotate(-angle)
 
+    # roatetd image center
+    rotated_image_center = (pos[0] - rotated_offset.x, pos[1] - rotated_offset.y)
 
-def blitplayer(body, bodysize, xpos, ypos, angle):
+    # get a rotated image
+    rotated_image = pygame.transform.rotate(image, angle)
+    rotated_image_rect = rotated_image.get_rect(center = rotated_image_center)
 
+    # rotate and blit the image
+    surf.blit(rotated_image, rotated_image_rect)
 
-    # Rotate the square surface
-    diagonal = math.sqrt(bodysize ** 2 + bodysize ** 2)
-    rotated_square = pygame.Surface((diagonal, diagonal), pygame.SRCALPHA)
-    rotated_square.fill((0, 0, 0, 0))
-
-    rotated_surface = pygame.transform.rotate(body, angle)
-
-    # Calculate the position to draw the rotated square
-    pos_x = (rotated_square.get_width() - rotated_surface.get_width()) // 2
-    pos_y = (rotated_square.get_height() - rotated_surface.get_height()) // 2
-
-    rotated_square.blit(rotated_surface, (pos_x, pos_y))
-
+w, h = player_im.get_size()
 
 
-    screen.blit(rotated_square, (xpos, ypos))
+hero = Player(RANGESTAB_BOX_HERO, 1, 1, 10, np.array([WIDTH/2,HEIGHT/2]), 0, WIDTH, HEIGHT)
 
+adversary = Player(RANGESTAB_BOX_HERO, 1, 1, 10, np.array([WIDTH/4,HEIGHT/2]), 0, WIDTH, HEIGHT)
 
+game = Game(hero, adversary, 10)
 
-
-
+game.one_step()
 
 
 
@@ -82,24 +82,18 @@ while running:
         if event.type == pygame.QUIT:
             running = False
     
-    keys = pygame.key.get_pressed()
-    if keys[pygame.K_UP]:
-        player_y-=.1
 
-    elif keys[pygame.K_DOWN]:
-        player_y+=.1
-    
-    elif keys[pygame.K_RIGHT]:
-        player_x+=.1
-    
-    elif keys[pygame.K_LEFT]:
-        player_x-=.1
+    game.one_step()
 
+    player_pos = list(game.hero.position)
+    player_angle = game.hero.theta
 
+    adversary_pos = list(game.adversary.position)
+    adversary_angle = game.adversary.theta
 
+    blitRotate(screen, player_im, player_pos, (w/2, h/2), player_angle)
 
-    screen.blit((player_body), (player_x, player_y))
-    screen.blit(adversary_body, (adversary_x, adversary_y))
+    blitRotate(screen, adversary_im, adversary_pos, (w/2, h/2), adversary_angle)
     
     # Keep the box inside the screen boundaries
     player_x = max(0, min(WIDTH - PLAYER_SIZE, player_x))

@@ -61,8 +61,8 @@ class Attack:
 
 
 class Game:
-    arena_length = 100
-    arena_width = 100
+    arena_length = 1920
+    arena_width = 960
 
     # im just gonna make comments for features to add
 
@@ -79,7 +79,7 @@ class Game:
     def one_step(self):
         # maybe just let them have modes like shield raised and trust each agent to correctly do damage on the other     like a state?
         self.hero.one_step()
-        self.adversary.adversary_one_step()
+        self.adversary.one_step()
         self.calculate_damage()
 
         # check for win
@@ -97,23 +97,23 @@ class Game:
     # TAKE THE CONVENTION THAT  POSITION IS TOP LEFT OF HIT BOX!!!
     def calculate_damage(self):
         
-        damage_box_hero = self.hero.damagebox
-        damage_box_adversary = self.adversary.damagebox
+        # damage_box_hero = self.hero.damagaebox
+        # damage_box_adversary = self.adversary.damagebox
 
-        hero_pos = self.hero.position
-        adversary_pos = self.adversary.position
+        # hero_pos = self.hero.position
+        # adversary_pos = self.adversary.position
 
-        #NOTE: need to rotate damageboxes along with players/adversaries as they are in their frames
+        # #NOTE: need to rotate damageboxes along with players/adversaries as they are in their frames
 
-        # # Hero takes damage
-        # if ():
-        #     self.hero.health -= damage_box_adversary['damage']
+        # # # Hero takes damage
+        # # if ():
+        # #     self.hero.health -= damage_box_adversary['damage']
 
 
         # # Adversary takes damage
         # if ():
         #     self.adversary.health -= damage_box_hero['damage']
-
+        pass
 
 
 
@@ -124,15 +124,18 @@ class Player:
 
     mode = Mode.NORMAL
    
-    def __init__(self, hitbox, movement_speed, max_rotation_speed, max_health, position, theta):
+    def __init__(self, hitbox, max_movement_speed, max_rotation_speed, max_health, position, theta, arena_width, arena_length):
         self.hitbox_width = hitbox['width']
         self.hitbox_height = hitbox['height']
         self.max_health = max_health
         self.health = max_health
         self.position = position
         self.theta = theta
-        self.movement_speed = movement_speed
+        self.max_movement_speed = max_movement_speed
         self.max_rotation_speed = max_rotation_speed
+        self.shieldcooldown = 0
+        self.arena_length = arena_length
+        self.arena_width = arena_width
 
         # Damage box is, relative to player, where the player is doing damage and magnitude of damage
         self.Attack = None
@@ -142,25 +145,55 @@ class Player:
     def one_step(self):
 
         # Player chooses movement and attack/defensive action
-        self.position +=
-        self.theta +=
+        self.position = self.position + 10*(np.random.rand(2) - 0.5)
+        self.theta += 1
 
-        # Step attack
-        if self.mode == Mode.NORMAL:
+        if self.theta > 360:
+            self.theta -= 360
+
+        if self.theta < -360:
+            self.theta += 360
+
+        if self.position[0] < 0:
+            self.position[0] = 0
+
+        if self.position[1] < 0:
+            self.position[1] = 0
+
+        if self.position[0] > self.arena_width:
+            self.position[0] = self.arena_width
+
+        if self.position[1] > self.arena_length:
+            self.position[1] = self.arena_width
+
+        # # Step attack
+        # if self.mode == Mode.NORMAL:
+
 
 
 
         
 
-    # Changes Damage box to the corresponding attack
-    def select_attack(self):
+    # # Changes Damage box to the corresponding attack
+    # def select_attack(self):
             
 
 
 
-    def adversary_one_step(self):
-        pass
+    # def adversary_one_step(self):
+    #     pass
 
 
 
+
+hero = Player(RANGESTAB_BOX_HERO, 1, 1, 10, np.array([50,50]), 0, 1920, 960)
+
+adversary = Player(RANGESTAB_BOX_HERO, 1, 1, 10, np.array([50,50]), 0, 1920, 960)
+
+game = Game(hero, adversary, 10)
+
+
+
+
+game.one_step()
 
