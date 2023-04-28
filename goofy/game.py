@@ -1,5 +1,6 @@
 from collections import namedtuple
 from enum import Enum
+import numpy as np
 
 GameState = namedtuple('GameState', ['stop', 'win'])
 
@@ -15,16 +16,48 @@ class Mode(Enum):
     NORMAL = 1
     ATTACKING = 2
     SHIELDING = 3
-    STUNNED = 4
+    #STUNNED = 4
 
 class HeroAttacks(Enum):
     RANGESTAB = 1
     SHORTSWEEP = 2
 
-
 class AdversaryAttacks(Enum):
     RANGESTAB = 1
     SHORTSWEEP = 2
+
+
+# note trajectories may need to be shifted!
+RANGESTAB_TRAJECTORY_HERO = np.array([[0,0], [0, 1], [0, 2], [0, 3], [0, 4]])
+
+SHORTSWEEP_TRAJECTORY_HERO = np.array([[0,0], [0, 1], [0, 2], [0, 3], [0, 4]])  
+
+RANGESTAB_BOX_HERO = {'width': 5, 'height': 5}
+SHORTSWEEP_BOX_HERO = {'width': 5, 'height': 5}
+                    
+class Attack:
+
+    def __init__(self, damagebox, damage, length, time, trajectory):
+        self.damagebox_width = damagebox['width']
+        self.damagebox_height = damagebox['height']
+        self.damage = damage
+        self.length = length
+        self.time = 0
+        self.trajectory = trajectory
+
+        # Ensure this is doing the right thing
+        self.position = trajectory[0]
+
+    def one_step(self):
+
+        # Attack ends
+        if self.time == self.length:
+            return True
+
+        # Else Attack follows trajectory
+        self.time+= 1
+        self.position = self.trajectory[self.time]
+        return False
 
 
 class Game:
@@ -39,15 +72,15 @@ class Game:
         self.round_length = round_length
         self.time_left = round_length
 
-        # let both players access the position and health of the other
-        self.hero.connect(adversary)
-        self.adversary.connect(hero)
+        # Gamestate vector is length of round, initially empty, total length = round_length (s) *TIMESTEPS_PER_SEC
+        self.game_state_list = []
 
 
     def one_step(self):
         # maybe just let them have modes like shield raised and trust each agent to correctly do damage on the other     like a state?
         self.hero.one_step()
-        self.adversary.one_step()
+        self.adversary.adversary_one_step()
+        self.calculate_damage()
 
         # check for win
         if self.adversary.health <= 0:
@@ -70,76 +103,64 @@ class Game:
         hero_pos = self.hero.position
         adversary_pos = self.adversary.position
 
-        # Hero takes damage
-        if ():
-            self.hero.health -= damage_box_adversary['damage']
+        #NOTE: need to rotate damageboxes along with players/adversaries as they are in their frames
+
+        # # Hero takes damage
+        # if ():
+        #     self.hero.health -= damage_box_adversary['damage']
 
 
-        # Adversary takes damage
-        if ():
-            self.adversary.health -= damage_box_hero['damage']
+        # # Adversary takes damage
+        # if ():
+        #     self.adversary.health -= damage_box_hero['damage']
 
 
 
 
+# ALL HITBOXES ARE ADDED TO PLAYER POSITION! so if players position 
+# is [0,0] hitbox extends from [0,0] to [width, height]
 
-
-class Hero:
+class Player:
 
     mode = Mode.NORMAL
    
-    def __init__(self, hitbox_width, hitbox_height, movement_speed, rotation_speed, max_health, position):
-        self.hitbox_width = hitbox_width
-        self.hitbox_height = hitbox_height
+    def __init__(self, hitbox, movement_speed, max_rotation_speed, max_health, position, theta):
+        self.hitbox_width = hitbox['width']
+        self.hitbox_height = hitbox['height']
         self.max_health = max_health
         self.health = max_health
         self.position = position
+        self.theta = theta
         self.movement_speed = movement_speed
-        self.rotation_speed = rotation_speed
-
-        self.Adversary = None
+        self.max_rotation_speed = max_rotation_speed
 
         # Damage box is, relative to player, where the player is doing damage and magnitude of damage
-        self.damagebox = None
+        self.Attack = None
 
 
 
     def one_step(self):
+
+        # Player chooses movement and attack/defensive action
+        self.position +=
+        self.theta +=
+
+        # Step attack
+        if self.mode == Mode.NORMAL:
+
+
+
         
 
     # Changes Damage box to the corresponding attack
     def select_attack(self):
+            
 
 
 
-
-class Adversary:
-    def __init__(self, hitbox_width, hitbox_height, movement_speed, rotation_speed, max_health, position, attackloop):
-        self.hitbox_width = hitbox_width
-        self.hitbox_height = hitbox_height
-        self.max_health = max_health
-        self.health = max_health
-        self.position = position
-        self.movement_speed = movement_speed
-        self.rotation_speed = rotation_speed
-
-        self.loop = attackloop
-        self.Hero = None
-
-        # Damage box is, relative to player, where the player is doing damage and magnitude of damage
-        self.damagebox = None
+    def adversary_one_step(self):
+        pass
 
 
-    # Changes Damage box to the corresponding attack. 
-    def select_attack(self):
-
-    def one_step(self):
-        # Chase Player until at a certain range
-
-        # Use attack loop unless next move is ranged, then do ranged instead of chasing
-
-
-
-        # If loop requires sequence, perform sequence 
 
 
