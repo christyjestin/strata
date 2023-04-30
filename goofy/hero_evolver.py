@@ -26,6 +26,7 @@ def argmax_logits_to_one_hot(tensor, num_classes):
 class HeroEvolver(nn.Module):
     def __init__(self, weapon_pos_embedding_dim = 3, num_heads = 3, hero_token_cross_entropy_lambda = 1, 
                  weapon_token_cross_entropy_lambda = 1):
+        super().__init__()
         self.action_dim = ACTION_DIM
         self.player_dim = PLAYER_TOKEN_LENGTH
         self.weapon_dim = WEAPON_TOKEN_LENGTH

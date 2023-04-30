@@ -7,6 +7,7 @@ from torch import nn
 class AdaptiveEvolver(nn.Module):
     # TODO: add checks on init parameters
     def __init__(self):
+        super().__init__()
         self.state_dim = None
         self.policy_dim = None
         self.strategy_dim = None

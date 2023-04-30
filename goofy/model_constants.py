@@ -23,3 +23,8 @@ NUM_ATTACKS = 3
 NUM_ACTIONS = NUM_ATTACKS + 1 + 1
 # change in position (2), change in orientation (2)
 ACTION_DIM = 2 + 2 + NUM_ACTIONS
+
+# first value is health
+STATE_SPLIT = [1, PLAYER_TOKEN_LENGTH, NUM_WEAPON_TOKENS * WEAPON_TOKEN_LENGTH]
+
+STRATEGY_DIM = 20

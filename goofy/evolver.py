@@ -10,9 +10,6 @@ from model_constants import *
 
 EvolverLoss = namedtuple('EvolverLoss', ['player_token', 'weapon_token', 'opponent_health'])
 
-# first value is health
-STATE_SPLIT = [1, PLAYER_TOKEN_LENGTH, NUM_WEAPON_TOKENS * WEAPON_TOKEN_LENGTH]
-
 # trim a few unnecessary positions from a player token to create a token with same length as weapons
 def trim_token(token):
     assert len(token.shape) == 2 and token.shape[1] == PLAYER_TOKEN_LENGTH, "player token must be two dimensional"
@@ -26,6 +23,7 @@ def argmax_logits_to_one_hot(tensor, num_classes):
 class Evolver(nn.Module):
     def __init__(self, weapon_pos_embedding_dim = 3, player_pos_embedding_dim = 2, num_heads = 3, 
                  player_token_cross_entropy_lambda = 1, weapon_token_cross_entropy_lambda = 1):
+        super().__init__()
         self.action_dim = ACTION_DIM
         self.player_dim = PLAYER_TOKEN_LENGTH
         self.weapon_dim = WEAPON_TOKEN_LENGTH
