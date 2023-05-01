@@ -8,8 +8,6 @@ from model_constants import *
 
 # TODO: set global low precision fp dtype
 
-EvolverLoss = namedtuple('EvolverLoss', ['player_token', 'weapon_token', 'opponent_health'])
-
 # trim a few unnecessary positions from a player token to create a token with same length as weapons
 def trim_token(token):
     assert len(token.shape) == 2 and token.shape[1] == PLAYER_TOKEN_LENGTH, "player token must be two dimensional"

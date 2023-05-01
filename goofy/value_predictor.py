@@ -17,13 +17,13 @@ class ValuePredictor(nn.Module):
         self.time_embedding = nn.Embedding(self.time_horizon, self.time_embedding_dim)
 
         self.MLP = nn.Sequential([
-            nn.Linear(self.input_dim, 45),
+            nn.Linear(self.input_dim, 80),
             nn.ReLU(),
-            nn.Linear(45, 30),
+            nn.Linear(80, 40),
             nn.ReLU(),
-            nn.Linear(30, 15),
+            nn.Linear(40, 20),
             nn.ReLU(),
-            nn.Linear(15, 11)
+            nn.Linear(20, 11)
         ])
 
     def forward(self, states, strategies, remaining_time_horizon, in_search_mode):

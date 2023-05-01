@@ -11,7 +11,7 @@ class ConditionalAnalyzer(nn.Module):
         self.state_dim = STATE_DIM
         self.strategy_dim = STRATEGY_DIM
         self.embedding_dim = self.strategy_dim
-        self.output_dim = 3 * self.embedding_dim
+        self.output_dim = 4 * self.embedding_dim
 
         assert (self.embedding_dim % num_heads) == 0, "num_heads must evenly divide the embedding dimension"
 
@@ -62,4 +62,7 @@ class ConditionalAnalyzer(nn.Module):
         # attend strategy and player tokens to only each other
         output = self.partial_attn(x, x, x, need_weights = False)
 
-        return output.reshape((n, 3 * self.embedding_dim))
+        # prepend strategies to expose it to next module
+        output = torch.cat((strategies, output), dim = 1).reshape((n, 4 * self.embedding_dim)) # n x 4 x e -> n x 4e
+        assert output.shape == (n, self.output_dim)
+        return output

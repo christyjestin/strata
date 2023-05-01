@@ -1,3 +1,5 @@
+from collections import namedtuple
+
 # position (2), orientation as sin and cos (2), cooldown timers for shield and blast attack (2), one hot of mode (3)
 NUM_MODES = 3
 NUM_TIMERS = 2
@@ -31,3 +33,7 @@ STATE_DIM = 2 * sum(STATE_SPLIT)
 STRATEGY_DIM = 20
 
 TIME_HORIZON = 20 # TODO: change after discussing with Jacob
+
+EvolverLoss = namedtuple('EvolverLoss', ['player_token', 'weapon_token', 'opponent_health'])
+
+SearchPolicy = namedtuple('SearchPolicy', ['logits', 'parameters'])
