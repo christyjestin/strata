@@ -30,7 +30,7 @@ class HeroEvolver(nn.Module):
         self.action_dim = ACTION_DIM
         self.player_dim = PLAYER_TOKEN_LENGTH
         self.weapon_dim = WEAPON_TOKEN_LENGTH
-        self.state_dim = 2 * sum(STATE_SPLIT)
+        self.state_dim = STATE_DIM
         self.weapon_pos_embedding_dim = weapon_pos_embedding_dim
         self.weapon_MLP_input_dim = 3 * (self.weapon_dim + self.weapon_pos_embedding_dim) + self.action_dim
 

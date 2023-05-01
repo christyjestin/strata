@@ -26,5 +26,8 @@ ACTION_DIM = 2 + 2 + NUM_ACTIONS
 
 # first value is health
 STATE_SPLIT = [1, PLAYER_TOKEN_LENGTH, NUM_WEAPON_TOKENS * WEAPON_TOKEN_LENGTH]
+STATE_DIM = 2 * sum(STATE_SPLIT)
 
 STRATEGY_DIM = 20
+
+TIME_HORIZON = 20 # TODO: change after discussing with Jacob

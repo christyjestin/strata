@@ -8,9 +8,10 @@ class ConditionalAnalyzer(nn.Module):
         super().__init__()
         self.player_dim = PLAYER_TOKEN_LENGTH
         self.weapon_dim = WEAPON_TOKEN_LENGTH
-        self.state_dim = 2 * sum(STATE_SPLIT)
+        self.state_dim = STATE_DIM
         self.strategy_dim = STRATEGY_DIM
         self.embedding_dim = self.strategy_dim
+        self.output_dim = 3 * self.embedding_dim
 
         assert (self.embedding_dim % num_heads) == 0, "num_heads must evenly divide the embedding dimension"
 
