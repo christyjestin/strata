@@ -1,16 +1,12 @@
 from collections import namedtuple
 from enum import Enum
 import numpy as np
+import math
 
 GameState = namedtuple('GameState', ['stop', 'win'])
 
-
 TIMESTEPS_PER_SEC = 30
 TIMESTEP_LENGTH = 1 / TIMESTEPS_PER_SEC
-N_DIMS = 2
-
-CHASER_XDOT_LIMIT = 0.5
-RUNNER_XDOT_LIMIT = CHASER_XDOT_LIMIT * 1.5
 
 class Mode(Enum):
     NORMAL = 1
@@ -18,53 +14,83 @@ class Mode(Enum):
     SHIELDING = 3
     #STUNNED = 4
 
-class HeroAttacks(Enum):
-    RANGESTAB = 1
-    SHORTSWEEP = 2
+class Attacks(Enum):
+    STAB = 1
+    SWEEP = 2
+    BLAST = 3
 
-class AdversaryAttacks(Enum):
-    RANGESTAB = 1
-    SHORTSWEEP = 2
+def stabbing_trajectory_maker(num_timesteps, length, width, numpoints, separation):
+    
+    points = np.linspace(0,1,int(num_timesteps/2)+1)*length
 
+    points = list(points)
+    points += points[::-1]
+    points = np.array(points)
 
-# note trajectories may need to be shifted!
-RANGESTAB_TRAJECTORY_HERO = np.array([[0,0], [0, 1], [0, 2], [0, 3], [0, 4]])
+    y_offset_high = np.zeros_like(points) + width / 2
+    y_offset_low = np.zeros_like(points) - width / 2
 
-SHORTSWEEP_TRAJECTORY_HERO = np.array([[0,0], [0, 1], [0, 2], [0, 3], [0, 4]])  
+    pointshigh = np.vstack((points, y_offset_high)).T
+    pointslow = np.vstack((points, y_offset_low)).T
+    
+    allPoints = [pointshigh, pointslow]
 
-RANGESTAB_BOX_HERO = {'width': 5, 'height': 5}
-SHORTSWEEP_BOX_HERO = {'width': 5, 'height': 5}
-                    
+    for i in range (numpoints - 1):
+        newpointshigh = np.vstack((points + (i+1)*separation, y_offset_high)).T
+        newpointslow = np.vstack((points + (i+1)*separation, y_offset_low)).T
+        allPoints.append(newpointshigh)
+        allPoints.append(newpointslow)
+
+    return np.array(allPoints)
+
+def circular_trajectory_maker(num_timesteps, radius, numpoints, separation):
+    angles = np.linspace(0, 3/2*np.pi, num_timesteps + 1)
+
+    allPoints = []
+
+    for i in range(numpoints):
+        shifted_angles = np.roll(angles, -i * separation) 
+        x_shifted = radius * np.cos(shifted_angles)
+        y_shifted = radius * np.sin(shifted_angles)
+        newpoints = np.vstack((x_shifted, y_shifted)).T
+        allPoints.append(newpoints)
+
+    return np.array(allPoints)
+ 
 class Attack:
 
-    def __init__(self, damagebox, damage, length, time, trajectory):
-        self.damagebox_width = damagebox['width']
-        self.damagebox_height = damagebox['height']
+    def __init__(self, damage, length, trajectory):
         self.damage = damage
         self.length = length
-        self.time = 0
+        self.time_step = 0
         self.trajectory = trajectory
-
-        # Ensure this is doing the right thing
-        self.position = trajectory[0]
+        self.position = trajectory[:,0]
 
     def one_step(self):
 
         # Attack ends
-        if self.time == self.length:
+        if self.time_step == self.length:
+            self.time_step = 0
+            self.position = self.trajectory[:, 0]
             return True
 
         # Else Attack follows trajectory
-        self.time+= 1
-        self.position = self.trajectory[self.time]
+        self.time_step+= 1
+        self.position = self.trajectory[:, self.time_step]
         return False
 
+
+STAB_TRAJECTORY = stabbing_trajectory_maker(50, 30, 6, 8, 5)
+SWEEP_TRAJECTORY = circular_trajectory_maker(75, 80, 10, 3)
+BLAST_TRAJECTORY = stabbing_trajectory_maker(120, 1200, 20, 5, 5)
+
+STAB_ATTACK = Attack(10, 50, STAB_TRAJECTORY)
+BLAST_ATTACK = Attack(50, 60, BLAST_TRAJECTORY)
+SWEEP_TRAJECTORY = Attack(20, 50, SWEEP_TRAJECTORY)
 
 class Game:
     arena_length = 1920
     arena_width = 960
-
-    # im just gonna make comments for features to add
 
     def __init__(self, hero, adversary, round_length):
         self.hero = hero
@@ -77,7 +103,7 @@ class Game:
 
 
     def one_step(self):
-        # maybe just let them have modes like shield raised and trust each agent to correctly do damage on the other     like a state?
+    
         self.hero.one_step()
         self.adversary.one_step()
         self.calculate_damage()
@@ -92,29 +118,24 @@ class Game:
         return GameState(stop = False, win = True)
     
 
-    # check for overlap in damage boxes between hero and adversary, change their health accordingly
-    # Currently ignoring defending
-    # TAKE THE CONVENTION THAT  POSITION IS TOP LEFT OF HIT BOX!!!
+# Damage calculation is currently a radial distance estimate
     def calculate_damage(self):
         
-        # damage_box_hero = self.hero.damagaebox
-        # damage_box_adversary = self.adversary.damagebox
 
-        # hero_pos = self.hero.position
-        # adversary_pos = self.adversary.position
+        hero_pos = self.hero.position
+        adversary_pos = self.adversary.position
 
-        # #NOTE: need to rotate damageboxes along with players/adversaries as they are in their frames
-
+        hero_distance = np.linalg.norm(hero_pos - self.adversary.damagepoints, axis=1)
+        adversary_distance = np.linalg.norm(adversary_pos - self.hero.damagepoints, axis=1)
+    
         # # # Hero takes damage
-        # # if ():
-        # #     self.hero.health -= damage_box_adversary['damage']
+        if (np.min(hero_distance) < self.hero.hitbox_width):
+            self.hero.health -= self.adversary.damage
 
 
         # # Adversary takes damage
-        # if ():
-        #     self.adversary.health -= damage_box_hero['damage']
-        pass
-
+        if (np.min(adversary_distance) < self.adversary.hitbox_width):
+            self.adversary.health -= self.hero.damage
 
 
 # ALL HITBOXES ARE ADDED TO PLAYER POSITION! so if players position 
@@ -136,17 +157,18 @@ class Player:
         self.shieldcooldown = 0
         self.arena_length = arena_length
         self.arena_width = arena_width
+        self.mode = Mode.NORMAL
 
-        # Damage box is, relative to player, where the player is doing damage and magnitude of damage
         self.Attack = None
-
+        self.damagepoints = np.array([self.position])
+        self.attack_damage = 0
 
 
     def one_step(self):
 
         # Player chooses movement and attack/defensive action
-        self.position = self.position + 10*(np.random.rand(2) - 0.5)
-        self.theta += 1
+        #self.position = self.position + (np.random.rand(2) - 0.5)
+        self.theta = 0 #0.1
 
         if self.theta > 360:
             self.theta -= 360
@@ -154,46 +176,48 @@ class Player:
         if self.theta < -360:
             self.theta += 360
 
-        if self.position[0] < 0:
-            self.position[0] = 0
-
-        if self.position[1] < 0:
-            self.position[1] = 0
-
-        if self.position[0] > self.arena_width:
-            self.position[0] = self.arena_width
-
-        if self.position[1] > self.arena_length:
-            self.position[1] = self.arena_width
-
-        # # Step attack
-        # if self.mode == Mode.NORMAL:
+        theta_radians = np.pi* self.theta / (180)
+        rot = np.array([[math.cos(-theta_radians), -math.sin(-theta_radians)], [math.sin(-theta_radians), math.cos(-theta_radians)]])
 
 
+        # Mode Stuff
+        if self.mode == Mode.ATTACKING:
+
+            damagepoints = self.Attack.position
+            damagepoints = (rot @ damagepoints.T).T
+
+            self.damagepoints = self.position + damagepoints +  0 # potentially add offset
+
+            done_attacking = self.Attack.one_step()
+
+            if done_attacking:
+                self.mode = Mode.NORMAL
+                self.damagepoints = np.array([self.position])
 
 
-        
-
-    # # Changes Damage box to the corresponding attack
-    # def select_attack(self):
+        if self.mode == Mode.NORMAL:
             
+            self.damagepoints = np.array([self.position])
+            self.damage = 0
+
+            # if choose to attack....
+            
+            self.Attack = SWEEP_TRAJECTORY# model input
+            self.mode = Mode.ATTACKING
+
+            # if choose to shield...
+            #self.mode = Mode.SHIELDING
 
 
-
-    # def adversary_one_step(self):
-    #     pass
-
-
-
-
-hero = Player(RANGESTAB_BOX_HERO, 1, 1, 10, np.array([50,50]), 0, 1920, 960)
-
-adversary = Player(RANGESTAB_BOX_HERO, 1, 1, 10, np.array([50,50]), 0, 1920, 960)
-
+Default_Hitbox = {
+    'width': 32,
+    'height': 32
+}
+hero = Player(Default_Hitbox, 1, 1, 10, np.array([600,300]), 0, 1920, 960)
+adversary = Player(Default_Hitbox, 1, 1, 10, np.array([600,600]), 0, 1920, 960)
 game = Game(hero, adversary, 10)
 
-
-
-
 game.one_step()
+game.one_step()
+
 

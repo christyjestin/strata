@@ -24,7 +24,7 @@ BLACK = (0, 0, 0)
 
 # Build Screen
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Goofy Game")
+pygame.display.set_caption("Strata Demo")
 
 # player initial position
 player_x = WIDTH // 2 - PLAYER_SIZE // 2
@@ -34,11 +34,12 @@ player_y = HEIGHT // 2 - PLAYER_SIZE // 2
 adversary_x = WIDTH // 3 - PLAYER_SIZE // 2
 adversary_y = HEIGHT // 2 - PLAYER_SIZE // 2
 
+# Character sprites
 player_im = pygame.image.load("hero.png")
-
 adversary_im = pygame.image.load("adversary.png")
 
-def blitRotate(surf, image, pos, originPos, angle):
+# Prints the players to screen while preserving their sizing during rotation
+def blitRotate(screen, image, pos, originPos, angle):
 
     # offset from pivot to center
     image_rect = image.get_rect(topleft = (pos[0] - originPos[0], pos[1]-originPos[1]))
@@ -55,22 +56,18 @@ def blitRotate(surf, image, pos, originPos, angle):
     rotated_image_rect = rotated_image.get_rect(center = rotated_image_center)
 
     # rotate and blit the image
-    surf.blit(rotated_image, rotated_image_rect)
+    screen.blit(rotated_image, rotated_image_rect)
 
+
+# Prints all character's damage points to screen
+def blit_damage_points(screen, points, color, point_radius = 2):
+    for point in points:
+        x, y = point
+        pygame.draw.circle(screen, color, (x, y), point_radius)
+
+
+font = pygame.font.Font(pygame.font.get_default_font(), 36)
 w, h = player_im.get_size()
-
-
-hero = Player(RANGESTAB_BOX_HERO, 1, 1, 10, np.array([WIDTH/2,HEIGHT/2]), 0, WIDTH, HEIGHT)
-
-adversary = Player(RANGESTAB_BOX_HERO, 1, 1, 10, np.array([WIDTH/4,HEIGHT/2]), 0, WIDTH, HEIGHT)
-
-game = Game(hero, adversary, 10)
-
-game.one_step()
-
-
-
-
 
 # Game Loop
 running = True
@@ -81,26 +78,30 @@ while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
-    
 
+    
     game.one_step()
 
     player_pos = list(game.hero.position)
     player_angle = game.hero.theta
-
     adversary_pos = list(game.adversary.position)
     adversary_angle = game.adversary.theta
 
     blitRotate(screen, player_im, player_pos, (w/2, h/2), player_angle)
-
     blitRotate(screen, adversary_im, adversary_pos, (w/2, h/2), adversary_angle)
-    
-    # Keep the box inside the screen boundaries
-    player_x = max(0, min(WIDTH - PLAYER_SIZE, player_x))
-    player_y = max(0, min(HEIGHT - PLAYER_SIZE, player_y))
 
+    player_points = hero.damagepoints
+    adversary_points = adversary.damagepoints
+
+    blit_damage_points(screen, player_points, BLACK)
+    hero_health = font.render('Player Health: {}'.format(hero.health), True, (0, 0, 0))
+    screen.blit(hero_health, dest=(0,0))
+
+    adversary_health = font.render('Adversary Health: {}'.format(adversary.health), True, (0, 0, 0))
+    screen.blit(adversary_health, dest=(900,0))
 
     pygame.display.update()
+    pygame.time.delay(20)
 
 # Quit the game
 pygame.quit()
