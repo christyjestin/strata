@@ -3,6 +3,7 @@ from torch import nn
 
 from model_constants import *
 
+
 class ConditionalAnalyzer(nn.Module):
     def __init__(self, num_heads = 5):
         super().__init__()
@@ -19,19 +20,22 @@ class ConditionalAnalyzer(nn.Module):
         self.player_projection_head = nn.Linear(self.player_dim + 1, self.embedding_dim)
         self.weapon_projection_head = nn.Linear(self.weapon_dim + 1, self.embedding_dim)
 
-        # attend strategy and player tokens to all tokens
+        # attends the strategy and player tokens to all tokens (including themselves)
         self.full_attn = nn.MultiheadAttention(self.embedding_dim, num_heads = num_heads, batch_first = True)
-        # attend only the strategy and player tokens to each other
+        # attends only the strategy and player tokens to each other
         self.partial_attn = nn.MultiheadAttention(self.embedding_dim, num_heads = num_heads, batch_first = True)
 
-    def forward(self, states, strategies, in_search_mode):
+    # note that w always refers to NUM_WEAPON_TOKENS
+    def forward(self, states, strategies, mode):
         assert len(states.shape) == 2 and states.shape[1] == self.state_dim
         assert len(strategies.shape) == 2 and strategies.shape[1] == self.strategy_dim
-        assert in_search_mode or states.shape[0] == strategies.shape[0], "states and strategies must align in backprop mode"
+        assert mode in [SEARCH_MODE, BACKPROP_MODE]
+        assert mode == SEARCH_MODE or states.shape[0] == strategies.shape[0], \
+                                    "states and strategies must align in backprop mode"
 
         n = states.shape[0] # batch size
-        # in search mode, there's a single strategy and many states, so we need to expand strategies to match states
-        if in_search_mode:
+        # replicate strategy to match the number of states in search mode
+        if mode == SEARCH_MODE:
             assert strategies.shape[0] == 1
             strategies = strategies.expand(n, -1)
         strategies = torch.unsqueeze(strategies, dim = 1) # n x 1 x e
@@ -60,9 +64,9 @@ class ConditionalAnalyzer(nn.Module):
         x = self.full_attn(q, kv, kv, need_weights = False)
         x = x + q # residual connection
         # attend strategy and player tokens to only each other
-        output = self.partial_attn(x, x, x, need_weights = False)
+        output = self.partial_attn(x, x, x, need_weights = False) # n x 3 x e
 
         # prepend strategies to expose it to next module
-        output = torch.cat((strategies, output), dim = 1).reshape((n, 4 * self.embedding_dim)) # n x 4 x e -> n x 4e
+        output = torch.cat((strategies, output), dim = 1).reshape(n, 4 * self.embedding_dim) # n x 4 x e -> n x 4e
         assert output.shape == (n, self.output_dim)
         return output

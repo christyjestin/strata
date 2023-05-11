@@ -2,147 +2,140 @@ import numpy as np
 import torch
 from torch import nn
 
-# TODO: double check imports and add type hints
+from policy_predictor import PolicyPredictor
+from value_predictor import ValuePredictor
+from conditional_analyzer import ConditionalAnalyzer
+from evolver import Evolver
+
+from model_constants import *
 
 class AdaptiveEvolver(nn.Module):
     # TODO: add checks on init parameters
-    def __init__(self):
+    def __init__(self, search_depth, trajectory_count, branching_number, bloom_factor):
         super().__init__()
-        self.state_dim = None
+        self.state_dim = STATE_DIM
         self.policy_dim = None
-        self.strategy_dim = None
+        self.strategy_dim = STRATEGY_DIM
+        self.action_dim = ACTION_DIM
 
         # M: memory module that distills the opponent's strategy into a latent vector
         self.memory = None
         # c_t: latent vector that serves as a running tally of adversary's strategy
         self.adversary_strategy = None
-        # AE: predicts the partial next state by evolving only the portions of state that belong to adversary or
-        # are shared; takes the current state and the latent vector for adversary's strategy as input
-        self.adversary_evolver = None
-        # PP: predicts a search policy for next actions given the partial next state and the adversary's strategy
-        self.policy_predictor = None
-        # HE: predicts the full next state by evolving only the portions of state that belong to the hero or are shared;
-        # takes the partial next state and the chosen action as input
-        self.hero_evolver = None
-        # V: predicts the value of the current state over a finite time horizon h given adversary's strategy
-        self.value_predictor = None
+        # CA: conditional analyzer that is used in both policy and value prediction but never directly called
+        self.conditional_analyzer = ConditionalAnalyzer()
+        # E: predicts the next state by evolving only the portions of state that belong to one of the players
+        # i.e. this model approximates the one step for a single player
+        # takes the current state and the action (or predicted action for adversary) as input
+        self.evolver = Evolver()
+        # HP: predicts a search policy for the hero's next actions given the state and the adversary's strategy vector
+        self.hero_policy = PolicyPredictor(self.conditional_analyzer)
+        # AP: predicts the adversary's next action given the state adn the adversary's strategy vector
+        self.adversary_policy = PolicyPredictor(self.conditional_analyzer)
+        # V: predicts the value of the current state over a finite time horizon h given adversary's strategy vector
+        self.value_predictor = ValuePredictor(self.conditional_analyzer)
         # h: time horizon over which we want to maximize value
-        self.time_horizon = None
+        self.time_horizon = TIME_HORIZON
         # k: length of state/action trajectory that is considered (not only including initial state)
-        self.search_depth = None
+        self.search_depth = search_depth
         # n: number of state/action trajectories that are kept after each round of pruning
-        self.trajectory_count = None
+        self.trajectory_count = trajectory_count
         # b: the number of actions that are considered from each state during the search
-        self.branching_number = None
+        self.branching_number = branching_number
         # f: the number of actions considered for the very first action is bloom factor x trajectory count
-        self.bloom_factor = None
+        self.bloom_factor = bloom_factor
 
-        self.adversary_evolver_loss = None
-        self.hero_evolver_loss = None
-        self.value_predictor_loss = None
-
-        # need a lambda value for each loss that involves the strategy vector since this means that the loss backprops
-        # to the memory module and we need a way to weight the different losses that are relevant to the memory module
-        self.adversary_evolver_lambda = None
-        self.value_predictor_lambda = None
-        self.policy_predictor_lambda = None
-
-    # TODO: ensure that computational graph isn't being built; in particular that the no grad decorator also
-    # applies to the nested forward calls
     # produces an action a_t when given a state s_t
     @torch.no_grad() # backward pass only happens at the end of the game so no need to build computational graph here
     def forward(self, s_t: torch.Tensor):
-        assert s_t.shape == (self.state_dim,)
+        s_t = s_t.reshape(1, self.state_dim) # state needs to be 2d for later functions
 
+        # TODO: revisit after writing LSTM
         # only update adversary strategy with the true current state s_t
         self.adversary_strategy = self.memory(self.adversary_strategy, s_t)
 
-        # first level of tree search is handled separately outside of the loop
-        # partially evolve state to produce a search policy
-        partial_next_s = self.adversary_evolver(self.adversary_strategy, s_t)
-        search_policy = self.policy_predictor(self.adversary_strategy, partial_next_s)
-
-        # grab b actions from search policy and compute projected values for all b
-        args = (search_policy, self.trajectory_count * self.bloom_factor, partial_next_s, s_t, self.time_horizon - 1)
-        candidate_next_states, candidate_actions, candidate_values = self.sample_and_compute_values(*args)
+        # first level of tree search is handled separately outside of the loop since we want to setup initial actions
+        candidate_next_states, candidate_actions, candidate_values = self.expand_search_tree(s_t, s_t, depth = 0)
 
         # grab the n state action pairs with the highest projected total values
         indices = torch.argsort(candidate_values, descending = True)[:self.trajectory_count]
+        # we'll continue to evaluate these n best initial actions by rolling out state/action trajectories from them
         candidate_initial_actions = candidate_actions[indices]
-        candidate_states = candidate_next_states[indices]
+        # this will always be the final state for each of the candidate state/action trajectories
+        # we need to store these states to do the next level of rollout
+        candidate_final_states = candidate_next_states[indices]
 
         # we want to keep track of what the initial action was for each of our top trajectories
-        # at the beginning, the candidate trajectories and candidate initial actions line up perfectly
+        # the candidate trajectories and candidate initial actions line up perfectly at the beginning
+        # but this will change as we continue rollout
         initial_action_idx_for_candidates = np.arange(self.trajectory_count)
 
         # subsequent levels of tree search are handled in the loop
         for i in range(1, self.search_depth):
-            candidate_next_states = torch.empty((self.trajectory_count, self.branching_number, self.state_dim))
-            candidate_values = torch.empty((self.trajectory_count, self.branching_number))
+            # during rollout, we don't care about any actions other than the first
+            candidate_next_states, _, candidate_values = self.expand_search_tree(s_t, candidate_final_states, depth = i)
 
-            # TODO: consider vectorizing this loop or at least the adversary evolver and policy predictor steps
-            # generate b new nodes for each of the candidate trajectories
-            for state_index in range(self.trajectory_count):
-                # same as first level of tree search but the value of b and the remaining time horizon have changed
-                partial_next_s = self.adversary_evolver(self.adversary_strategy, candidate_states[state_index])
-                search_policy = self.policy_predictor(self.adversary_strategy, partial_next_s)
-                args = (search_policy, self.branching_number, partial_next_s, s_t, self.time_horizon - 1 - i)
-                # we don't need to track actions anymore since these are no longer the initial actions
-                candidate_next_states[state_index], _, candidate_values[state_index] = self.sample_and_compute_values(*args)
-
-            # find the best new candidates and store their initial actions and their next states
-            indices = torch.argsort(candidate_values.flatten(), descending = True)[:self.trajectory_count]
-            candidate_states = candidate_next_states.flatten(end_dim = 1)[indices]
+            # find the new best candidate trajectories; then store their initial actions and final states
+            indices = torch.argsort(candidate_values, descending = True)[:self.trajectory_count]
+            candidate_final_states = candidate_next_states[indices]
+            # repeat this array before indexing to reflect how the search tree branches out from each trajectory
+            # note that branches from the same trajectory are contiguous (hence np.repeat instead of np.tile)
             initial_action_idx_for_candidates = np.repeat(initial_action_idx_for_candidates, self.branching_number)[indices]
 
-            # stop early if every trajectory has the same initial action since this will remain the case as we go deeper
+            # stop early if every trajectory has the same initial action since this will still be the case as we go deeper
             if len(np.unique(initial_action_idx_for_candidates)) == 1:
                 return candidate_initial_actions[initial_action_idx_for_candidates[0]]
 
             # write down the best trajectory at the end of the loop
             if i == self.search_depth - 1:
-                best_trajectory_index = torch.argmax(candidate_values.flatten()[indices])
+                # TODO: consider switching to plurality vote instead of argmax
+                # index before argmaxing so that you're lined up with the initial_action_idx array
+                best_trajectory_index = torch.argmax(candidate_values[indices]).item()
 
         best_initial_action_index = initial_action_idx_for_candidates[best_trajectory_index]
         return candidate_initial_actions[best_initial_action_index]
 
-    # sample b actions from the search policy pi and compute their total projected values
-    def sample_and_compute_values(self, pi, b, partial_next_s, initial_s, remaining_time_horizon):
-        candidate_actions = self.sample(pi, b) # shape is b x a
-        candidate_next_states = self.hero_evolver(partial_next_s, candidate_actions) # shape is b x s
+    # expands the search tree by one level
+    def expand_search_tree(self, initial_state: torch.Tensor, states: torch.Tensor, depth: int):
+        assert len(states.shape) == 2 and states.shape[1] == self.state_dim # states is n x s
+        assert initial_state.shape == (1, self.state_dim)
+        search_policies = self.hero_policy(states, self.adversary_strategy, mode = SEARCH_MODE) # n x p
+        # sample b actions per policy/state and evolve state accordingly
+        b = (self.bloom_factor * self.trajectory_count) if depth == 0 else self.branching_number
+        candidate_actions = self.sample_actions(search_policies, num_samples = b, for_adversary = False) # nb x a
+        partial_next_states = self.evolver(states, candidate_actions, misaligned_dims = True, 
+                                           is_adversary_step = False, mode = SEARCH_MODE) # E(n x s, nb x a) -> nb x s
+
+        # predict what action the adversary will take in response and evolve state accordingly
+        adversary_policies = self.adversary_policy(partial_next_states, self.adversary_strategy, 
+                                                   mode = SEARCH_MODE) # nb x p
+        adversary_actions = self.sample_actions(adversary_policies, num_samples = 1, for_adversary = True) # nb x a
+        candidate_next_states = self.evolver(partial_next_states, adversary_actions, misaligned_dims = False, 
+                                             is_adversary_step = True, mode = SEARCH_MODE) # E(nb x s, nb x a) -> nb x s
+
         # compute value accumulated so far by comparing each next state to the initial state
-        v_accumulated = self.reward(initial_s, candidate_next_states) # shape is (b,)
-        # project the value of each state over the remaining time horizon; shape is (b,)
-        v_projected = self.value_predictor(self.adversary_strategy, candidate_next_states, remaining_time_horizon)
-        candidate_values = v_accumulated + v_projected
-        return candidate_next_states, candidate_actions, candidate_values
+        v_accumulated = self.reward(initial_state, candidate_next_states) # (1 x s, nb x s) -> nb x 1
+        # project the value of each state over the remaining time horizon
+        remaining_time_horizon = self.time_horizon - depth - 1
+        v_projected = self.value_predictor(candidate_next_states, self.adversary_strategy, remaining_time_horizon, 
+                                           mode = SEARCH_MODE) # nb x 1
+        candidate_values = v_accumulated + v_projected # nb x 1
+        return candidate_next_states, candidate_actions, candidate_values.flatten() # (nb x s, nb x a, nb)
 
     # sample num_samples unique actions from the policy pi
-    def sample(self, pi, num_samples):
-        assert pi.shape == (self.policy_dim,)
-        assert isinstance(num_samples, int)
+    def sample_actions(self, pi, num_samples: int, for_adversary: bool):
+        assert len(pi.shape) == 2 and pi.shape[1] == self.policy_dim
         pass
 
     # computes the reward by calculating the change in health differential from s_t to s_t' where t' >= t
-    def reward(self, initial_state, next_states):
-        return self.health_differential(next_states) - self.health_differential(initial_state.unsqueeze(0))
+    def reward(self, initial_state: torch.Tensor, next_states: torch.Tensor):
+        return self.health_differential(next_states) - self.health_differential(initial_state)
 
     # computes hero health - adversary health at some time t given state s_t
     # assumes 2d input for (potentially) multiple states
-    def health_differential(self, s):
-        assert s.shape[1] == self.state_dim and len(s.shape) == 2
+    def health_differential(self, s: torch.Tensor):
+        assert len(s.shape) == 2 and s.shape[1] == self.state_dim
         pass
-
-    def batch_value_prediction(self, strategy_history, state_history):
-        # TODO: in likely event of batched refactoring, move asserts to backward function
-        n = strategy_history.shape[0]
-        assert strategy_history.shape == (n, self.strategy_dim)
-        assert state_history.shape == (n, self.state_dim)
-        v_projected = torch.empty((n,), requires_grad = True)
-        # TODO: make a decision about whether to vectorize this loop
-        for i in range(n):
-            v_projected[i] = self.value_predictor(strategy_history[i], state_history[i:i+1], remaining_time_horizon = n - i)
-        return v_projected
 
     def compute_log_prob(self, pi, a):
         pass

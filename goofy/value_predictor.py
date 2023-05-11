@@ -26,25 +26,24 @@ class ValuePredictor(nn.Module):
             nn.Linear(20, 11)
         ])
 
-    def forward(self, states, strategies, remaining_time_horizon, in_search_mode):
-        assert in_search_mode or states.shape[0] == remaining_time_horizon.shape[0], \
-                                        "states and time horizon must align in backprop mode"
+    def forward(self, states, strategies, remaining_time_horizon, mode):
+        assert mode in [SEARCH_MODE, BACKPROP_MODE]
 
         n = states.shape[0] # batch size
-        if in_search_mode:
+        if mode == SEARCH_MODE:
             assert isinstance(remaining_time_horizon, int), "remaining time horizon must be an integer in search mode"
             remaining_time_horizon = torch.full((n,), remaining_time_horizon)
 
-        analysis = self.conditional_analyzer(states, strategies, in_search_mode)
+        analysis = self.conditional_analyzer(states, strategies, mode)
         embedded_time = self.time_embedding(remaining_time_horizon)
-        x = torch.cat((analysis, embedded_time), dim = 1)
-        mlp_outputs = self.MLP(x)
+        mlp_outputs = self.MLP(torch.cat((analysis, embedded_time), dim = 1))
 
-        # TODO: talk to Jacob and consider making this 1 by 1 plus 1 for dims
+        # TODO: talk to Jacob and consider making this (1 @ 1 + 1) instead of (5 @ 5 + 1) for dims
         x1, x2, b = torch.split(mlp_outputs, [5, 5, 1], dim = 1)
         # matrix implementation of x1 @ x2.T plus a bias where x1 and x2 are row vectors
         # the idea here is to allow scaling since value will (to some extent) scale with time
         output = torch.sum(x1 * x2, dim = 1, keepdim = True) + b
+        assert output.shape == (n, 1)
         return output
 
     def encode_time(self, remaining_time_horizon):

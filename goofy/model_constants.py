@@ -1,11 +1,11 @@
 from collections import namedtuple
 
 # position (2), orientation as sin and cos (2), cooldown timers for shield and blast attack (2), one hot of mode (3)
-NUM_MODES = 3
+NUM_PLAYER_MODES = 3
 NUM_TIMERS = 2
-PLAYER_TOKEN_LENGTH = 2 + 2 + NUM_TIMERS + NUM_MODES
+PLAYER_TOKEN_LENGTH = 2 + 2 + NUM_TIMERS + NUM_PLAYER_MODES
 PLAYER_L2_WEIGHT = [1, 1, 10, 10, 5, 5]
-assert len(PLAYER_L2_WEIGHT) == PLAYER_TOKEN_LENGTH - NUM_MODES
+assert len(PLAYER_L2_WEIGHT) == PLAYER_TOKEN_LENGTH - NUM_PLAYER_MODES
 
 # position (2), damage (1), one hot of type (3)
 NUM_WEAPON_TYPES = 3
@@ -37,3 +37,6 @@ TIME_HORIZON = 20 # TODO: change after discussing with Jacob
 EvolverLoss = namedtuple('EvolverLoss', ['player_token', 'weapon_token', 'opponent_health'])
 
 SearchPolicy = namedtuple('SearchPolicy', ['logits', 'parameters'])
+
+SEARCH_MODE = 'search_mode'
+BACKPROP_MODE = 'backprop_mode'

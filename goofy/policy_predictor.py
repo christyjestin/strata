@@ -14,12 +14,11 @@ class PolicyPredictor(nn.Module):
         self.num_distribution_parameters = num_distribution_parameters
         # our movement and rotation policy should be dependent on the action we're taking e.g. shield vs attack
         # so we scale the number of distribution parameters produced by the number of actions
+        # +1 for the actual action logits themselves
         self.output_dim = NUM_ACTIONS * (1 + self.num_distribution_parameters)
         self.output_split = [NUM_ACTIONS, NUM_ACTIONS * self.num_distribution_parameters]
         assert sum(self.output_split) == self.output_dim, "The split must sum to the output dimension"
 
-        # TODO: figure out whether to use separate normalizing flows and policy predictors
-        # for adversary vs hero 
         self.MLP = nn.Sequential([
             nn.Linear(self.input_dim, 80),
             nn.ReLU(),
@@ -30,9 +29,9 @@ class PolicyPredictor(nn.Module):
             nn.Linear(60, self.output_dim)
         ])
 
-    def forward(self, states, strategies, in_search_mode):
+    def forward(self, states, strategies, mode):
         n = states.shape[0] # batch size
-        analysis = self.conditional_analyzer(states, strategies, in_search_mode)
+        analysis = self.conditional_analyzer(states, strategies, mode)
         mlp_output = self.MLP(analysis)
         logits, parameters = torch.split(mlp_output, self.output_split, dim = 1)
 

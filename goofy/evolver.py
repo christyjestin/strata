@@ -1,7 +1,6 @@
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
-from collections import namedtuple
 from itertools import chain
 
 from model_constants import *
@@ -80,47 +79,45 @@ class Evolver(nn.Module):
         params = [model.parameters() for model in all_models]
         self.optimizer = optim.Adam(chain(*params), lr = 1e-3)
 
-    def forward(self, partial_next_states, actions, in_search_mode, is_adversary_step):
-        assert len(partial_next_states.shape) == 2 and partial_next_states.shape[1] == self.state_dim
-        assert len(actions.shape) == 2 and actions.shape[1] == self.action_dim
-        assert in_search_mode or partial_next_states.shape[0] == actions.shape[0], \
-                                            "states and actions must align in backprop mode"
+    # predicts next state given current state and action
+    def forward(self, states, actions, misaligned_dims, is_adversary_step, mode):
+        assert len(states.shape) == 2 and states.shape[1] == self.state_dim # n x s
+        assert len(actions.shape) == 2 and actions.shape[1] == self.action_dim # nb x a
+        assert misaligned_dims or states.shape[0] == actions.shape[0], \
+                                            "states and actions must align unless stated otherwise"
+        assert mode in [SEARCH_MODE, BACKPROP_MODE]
 
         # reverse the player and opponent states if you're evolving the adversary
         if is_adversary_step:
-            partial_next_states = self.flip_state(partial_next_states)
+            states = self.flip_state(states)
 
-        n = partial_next_states.shape[0] # batch size
-        b = actions.shape[0] # branching number
+        n = states.shape[0] # batch size
+        assert actions.shape[0] % n == 0, "the number of actions must be evenly divisible by the number of states"
+        b = actions.shape[0] // n # branching number
 
         # preprocessing
-        player_state, opponent_state = torch.split(partial_next_states, 2, dim = 1)
+        player_state, opponent_state = torch.split(states, 2, dim = 1)
         player_health, player_token, player_weapon_tokens = torch.split(player_state, STATE_SPLIT, dim = 1)
         opponent_health, opponent_token, opponent_weapon_tokens = torch.split(opponent_state, STATE_SPLIT, dim = 1)
-        player_weapon_tokens = player_weapon_tokens.reshape(-1, NUM_WEAPON_TOKENS, self.weapon_dim)
 
         # use respective forward functions
         player_weapon_preds = self.weapon_forward(player_weapon_tokens, player_token, opponent_token, actions, 
-                                                in_search_mode = in_search_mode)
-        player_token_preds = self.player_forward(player_token, actions, in_search_mode = in_search_mode)
-        opponent_health_preds = self.opponent_health_forward(self, opponent_health, player_weapon_tokens, player_token, 
-                                                               opponent_token, actions, in_search_mode = in_search_mode)
+                                                misaligned_dims = misaligned_dims, mode = mode)
+        player_token_preds = self.player_forward(player_token, actions, misaligned_dims = misaligned_dims, mode = mode)
+        opponent_health_preds = self.opponent_health_forward(opponent_health, player_weapon_tokens, player_token, 
+                                                               opponent_token, actions, misaligned_dims = misaligned_dims)
 
-        # in search mode, we're considering one state and b actions, so we need to replicate the parts of 
-        # state that don't evolve to match the number of actions
-        # in backprop mode, we're considering n states and n corresponding actions, so no changes are necessary
-        if in_search_mode:
-            assert n == 1
-            player_health = player_health.expand(b, -1)
-            opponent_token = opponent_token.expand(b, -1)
-            opponent_weapon_tokens = opponent_weapon_tokens.expand(b, -1)
+        # replicate the parts of state that don't evolve to match the number of actions
+        if misaligned_dims:
+            player_health = torch.repeat_interleave(player_health, b, dim = 0)
+            opponent_token = torch.repeat_interleave(opponent_token, b, dim = 0)
+            opponent_weapon_tokens = torch.repeat_interleave(opponent_weapon_tokens, b, dim = 0)
 
         # repackage state
         player_state_preds = torch.cat((player_health, player_token_preds, player_weapon_preds), dim = 1)
         opponent_state_preds = torch.cat((opponent_health_preds, opponent_token, opponent_weapon_tokens), dim = 1)
         next_state_preds = torch.cat((player_state_preds, opponent_state_preds), dim = 1)
-
-        assert next_state_preds.shape == (b, self.state_dim)
+        assert next_state_preds.shape == (actions.shape[0], self.state_dim) # nb x s
 
         # re-reverse the player and opponent states if you're evolving the adversary
         if is_adversary_step:
@@ -130,17 +127,23 @@ class Evolver(nn.Module):
 
 
     # predicts next state for all weapon tokens
-    # one state paired with each of b actions in search mode and n state/action pairs in backprop mode
-    def weapon_forward(self, player_weapon_tokens, player_token, opponent_token, actions, in_search_mode):
-        assert len(player_weapon_tokens.shape) == 3 and \
-                player_weapon_tokens.shape[1:] == (NUM_WEAPON_TOKENS, self.weapon_dim)
+    # note that w always refers to NUM_WEAPON_TOKENS
+    def weapon_forward(self, player_weapon_tokens, player_token, opponent_token, actions, misaligned_dims, mode):
+        assert len(player_weapon_tokens.shape) == 2 and \
+                player_weapon_tokens.shape[1] == NUM_WEAPON_TOKENS * self.weapon_dim
         assert len(player_token.shape) == 2 and player_token.shape[1] == self.player_dim
         assert len(opponent_token.shape) == 2 and opponent_token.shape[1] == self.player_dim
         assert len(actions.shape) == 2 and actions.shape[1] == self.action_dim
-        assert in_search_mode or player_token.shape[0] == actions.shape[0], "states and actions must align in backprop mode"
+        assert misaligned_dims or player_token.shape[0] == actions.shape[0], \
+                                        "states and actions must align unless stated otherwise"
 
-        n = player_weapon_tokens.shape[0] # batch size
-        b = actions.shape[0] # branching number in search mode and batch size in backprop mode
+        n = player_token.shape[0] # batch size
+        nb = actions.shape[0]
+        assert nb % n == 0, "the number of actions must be evenly divisible by the number of states"
+        b = nb // n # branching number
+
+        # split up weapons so that they're a sequence of weapon tokens
+        player_weapon_tokens = player_weapon_tokens.reshape(n, NUM_WEAPON_TOKENS, self.weapon_dim)
 
         # concat pos embeddings instead of adding since all of x's dimensions are saturated with info
         x = torch.cat((player_weapon_tokens, self.weapon_pos_embedding.expand(n, -1, -1)), dim = 2) # n x w x d_w
@@ -152,18 +155,17 @@ class Evolver(nn.Module):
         player_tokens = torch.stack((player_token, opponent_token), dim = 1) # n x 2 x d_p
         cross_attn_outputs = self.weapon_to_player_attn(x, player_tokens, player_tokens, need_weights = False) # n x w x d_w
 
-        attn_outputs = torch.cat((x, self_attn_outputs, cross_attn_outputs), dim = 2)
+        attn_outputs = torch.cat((x, self_attn_outputs, cross_attn_outputs), dim = 2) # n x w x (2 * d_w)
 
-        # in search mode, there is only one state, so we need to expand it to line up with the number of actions
-        if in_search_mode:
-            assert n == 1
-            attn_outputs = attn_outputs.expand(b, -1, -1)
+        # replicate state to match the number of actions
+        if misaligned_dims:
+            attn_outputs = torch.repeat_interleave(attn_outputs, b, dim = 0) # nb x w x (2 * d_w)
 
-        actions = actions.expand(-1, NUM_WEAPON_TOKENS, -1) # b x w x a
-        mlp_inputs = torch.cat((attn_outputs, actions), dim = 2) # b x w x (d + a)
-        mlp_outputs = self.weapon_MLP(mlp_inputs) # b x w x o
+        actions = actions.expand(-1, NUM_WEAPON_TOKENS, -1) # nb x a -> nb x w x a
+        mlp_inputs = torch.cat((attn_outputs, actions), dim = 2) # nb x w x (d + a)
+        mlp_outputs = self.weapon_MLP(mlp_inputs) # nb x w x (d + a) -> nb x w x o
 
-        if in_search_mode:
+        if mode == SEARCH_MODE:
             # take argmax of logits to classify weapon type in search mode
             weapon_types = argmax_logits_to_one_hot(mlp_outputs[:, :, -NUM_WEAPON_TYPES:], num_classes = NUM_WEAPON_TYPES)
             weapon_outputs = torch.cat((mlp_outputs[:, :, :-NUM_WEAPON_TYPES], weapon_types), dim = 2)
@@ -172,51 +174,55 @@ class Evolver(nn.Module):
             weapon_outputs = mlp_outputs
 
         # repack all weapon tokens into one row
-        weapon_outputs = weapon_outputs.reshape(b, -1)
-        assert weapon_outputs.shape == (b, self.weapon_dim)
-
+        weapon_outputs = weapon_outputs.flatten(end_dim = 1)
+        assert weapon_outputs.shape == (nb, NUM_WEAPON_TOKENS * self.weapon_dim)
         return weapon_outputs
 
-
-    # see weapon_forward for explanation about search mode and backprop mode
-    def player_forward(self, player_token, actions, in_search_mode):
+    # predicts next state for player token
+    def player_forward(self, player_token, actions, misaligned_dims, mode):
         assert len(player_token.shape) == 2 and player_token.shape[1] == self.player_dim
         assert len(actions.shape) == 2 and actions.shape[1] == self.action_dim
-        assert in_search_mode or player_token.shape[0] == actions.shape[0], "states and actions must align in backprop mode"
+        assert misaligned_dims or player_token.shape[0] == actions.shape[0], \
+                                    "states and actions must align unless stated otherwise"
+        assert mode in [SEARCH_MODE, BACKPROP_MODE]
 
         n = player_token.shape[0] # batch size
-        b = actions.shape[0] # branching number in search mode and batch size in backprop mode
+        nb = actions.shape[0]
+        assert nb % n == 0, "the number of actions must be evenly divisible by the number of states"
+        b = nb // n # branching number
 
-        # in search mode, there is only one state, so we need to expand it to line up with the number of actions
-        if in_search_mode:
-            assert n == 1
-            player_token = player_token.expand(b, -1)
+        # replicate state to match the number of actions
+        if misaligned_dims:
+            player_token = torch.repeat_interleave(player_token, b, dim = 0)
 
         mlp_outputs = self.player_MLP(torch.cat((player_token, actions), dim = 1))
-        if in_search_mode:
-            # take argmax of logits to classify player mode in search mode
-            player_modes = argmax_logits_to_one_hot(mlp_outputs[:, -NUM_MODES:], num_classes = NUM_MODES)
-            player_outputs = torch.cat((mlp_outputs[:, :-NUM_MODES], player_modes), dim = 1)
+        if mode == SEARCH_MODE:
+            # take argmax of logits to classify the player's mode in search mode
+            player_modes = argmax_logits_to_one_hot(mlp_outputs[:, -NUM_PLAYER_MODES:], num_classes = NUM_PLAYER_MODES)
+            player_outputs = torch.cat((mlp_outputs[:, :-NUM_PLAYER_MODES], player_modes), dim = 1)
         else:
             # preserve logits for cross entropy loss in backprop mode
             player_outputs = mlp_outputs
 
-        assert player_outputs.shape == (b, self.player_dim)
+        assert player_outputs.shape == (nb, self.player_dim)
         return player_outputs
 
 
-    # see weapon_forward for explanation about search mode and backprop mode
     def opponent_health_forward(self, opponent_health, player_weapon_tokens, player_token, opponent_token, actions, 
-                                 in_search_mode):
+                                 misaligned_dims):
         assert len(opponent_health.shape) == 2 and opponent_health.shape[1] == 1
-        assert len(player_weapon_tokens.shape) == 3 and player_weapon_tokens.shape[1:] == (NUM_WEAPON_TOKENS, self.weapon_dim)
+        assert len(player_weapon_tokens.shape) == 2 and \
+            player_weapon_tokens.shape[1] == NUM_WEAPON_TOKENS * self.weapon_dim
         assert len(player_token.shape) == 2 and player_token.shape[1] == self.player_dim
         assert len(opponent_token.shape) == 2 and opponent_token.shape[1] == self.player_dim
         assert len(actions.shape) == 2 and actions.shape[1] == self.action_dim
-        assert in_search_mode or player_token.shape[0] == actions.shape[0], "states and actions must align in backprop mode"
+        assert misaligned_dims or player_token.shape[0] == actions.shape[0], \
+                                        "states and actions must align unless stated otherwise"
 
-        n = player_token.shape[0]
-        b = actions.shape[0]
+        n = player_token.shape[0] # batch size
+        nb = actions.shape[0]
+        assert nb % n == 0, "the number of actions must be evenly divisible by the number of states"
+        b = nb // n # branching number
 
         # player to weapon cross attention
         trimmed_token = trim_token(opponent_token)
@@ -232,15 +238,15 @@ class Evolver(nn.Module):
         self_attn_outputs = torch.mean(self_attn_outputs, dim = 0, keepdim = True)
         attn_outputs = torch.cat((cross_attn_outputs, self_attn_outputs), dim = 1)
 
-        # in search mode, there is only one state, so we need to expand it to line up with the number of actions
-        if in_search_mode:
-            assert n == 1
-            attn_outputs = attn_outputs.expand(b, -1)
+        # replicate state to match the number of actions
+        if misaligned_dims:
+            attn_outputs = torch.repeat_interleave(attn_outputs, b, dim = 0)
 
-        # mlp outputs the change in health rather than the raw value (so we add this to the current health value)
         mlp_input = torch.cat((attn_outputs, actions), dim = 1)
+        # the output of the mlp is the change in health rather than the raw final value
         opponent_health_outputs = opponent_health + self.opponent_health_MLP(mlp_input)
-        assert opponent_health_outputs.shape == (b, 1)
+
+        assert opponent_health_outputs.shape == (nb, 1)
         return opponent_health_outputs
 
     @property # helper function since we always use all embeddings
@@ -253,14 +259,14 @@ class Evolver(nn.Module):
 
     # computes loss, back propagates, and steps with the optimizer
     # returns a namedtuple with the 3 components of evolver loss
-    def backward_pass(self, partial_next_states, actions, next_states, is_adversary_step):
+    def backward_pass(self, states, actions, next_states, evolving_adversary):
         # reverse the player and opponent states if you're evolving the adversary
         # there's no need to flip back because we won't ever look at the outputs of the forward pass
-        if is_adversary_step:
-            partial_next_states = self.flip_state(partial_next_states)
+        if evolving_adversary:
+            states = self.flip_state(states)
             next_states = self.flip_state(next_states)
 
-        next_state_preds = self.forward(partial_next_states, actions, in_search_mode = False)
+        next_state_preds = self.forward(states, actions, misaligned_dims = False)
         loss, loss_breakdown = self.loss_function(next_state_preds, next_states)
         self.optimizer.zero_grad()
         loss.backward()
@@ -303,8 +309,8 @@ class Evolver(nn.Module):
         assert preds.shape == target.shape, "preds and target must be the same shape"
         assert len(preds.shape) == 2 and preds.shape[1] == self.player_dim
 
-        L2_loss = self.weighted_L2_loss(preds[:, :-NUM_MODES], target[:, :-NUM_MODES], self.player_token_L2_loss_weight)
-        CE_loss = self.CE_loss(preds[:, -NUM_MODES:], target[:, -NUM_MODES:])
+        L2_loss = self.weighted_L2_loss(preds[:, :-NUM_PLAYER_MODES], target[:, :-NUM_PLAYER_MODES], self.player_token_L2_loss_weight)
+        CE_loss = self.CE_loss(preds[:, -NUM_PLAYER_MODES:], target[:, -NUM_PLAYER_MODES:])
         return L2_loss + self.player_token_CE_lambda * CE_loss
 
     # cross entropy for weapon type (one hot part of token) and weighted L2 for the rest
@@ -321,7 +327,7 @@ class Evolver(nn.Module):
     def compute_opponent_health_loss(self, preds, target):
         return torch.mean((preds - target) ** 2)
 
-    # flips state from (player, opponent) to (opponent, player) along dim 1
+    # flips state from (player state, opponent state) to (opponent state, player state) along dim 1
     def flip_state(self, state):
         assert len(state.shape) == 2 and state.shape[1] == self.state_dim
         a, b = torch.split(state, 2, dim = 1)
