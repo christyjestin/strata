@@ -69,9 +69,15 @@ def blit_damage_points(screen, points, color, point_radius = 2):
 font = pygame.font.Font(pygame.font.get_default_font(), 36)
 w, h = player_im.get_size()
 
+SPEED = 5
+ROT_SPEED = 10
+
 # Game Loop
 running = True
 while running:
+    x_change = 0
+    y_change = 0
+    theta_dot = 0
     screen.fill(WHITE)
 
     # Event handling
@@ -79,8 +85,25 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_UP] or keys[pygame.K_w]:
+            y_change = -SPEED
+        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+            y_change = SPEED
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            x_change = -SPEED
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            x_change = SPEED
+
+        if keys[pygame.K_r]:
+            theta_dot = ROT_SPEED
+        if keys[pygame.K_q]:
+            theta_dot = -ROT_SPEED
+
     
     game.one_step()
+    game.hero.position = game.hero.position + np.array([x_change, y_change])
+    game.hero.theta = game.hero.theta + theta_dot
 
     player_pos = list(game.hero.position)
     player_angle = game.hero.theta
@@ -94,11 +117,16 @@ while running:
     adversary_points = adversary.damagepoints
 
     blit_damage_points(screen, player_points, BLACK)
-    hero_health = font.render('Player Health: {}'.format(hero.health), True, (0, 0, 0))
+    blit_damage_points(screen, adversary_points, RED)
+
+    goal = font.render('Autostab enabled, defeat adversary! (awsd to move, r,q to rotate)'.format(int(hero.health)), True, (0, 0, 0))
+    screen.blit(goal, dest=(0,900))
+
+    hero_health = font.render('Player Health: {}'.format(int(hero.health)), True, (0, 0, 0))
     screen.blit(hero_health, dest=(0,0))
 
-    adversary_health = font.render('Adversary Health: {}'.format(adversary.health), True, (0, 0, 0))
-    screen.blit(adversary_health, dest=(900,0))
+    adversary_health = font.render('Adversary Health: {}'.format(int(adversary.health)), True, (0, 0, 0))
+    screen.blit(adversary_health, dest=(800,0))
 
     pygame.display.update()
     pygame.time.delay(20)

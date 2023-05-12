@@ -22,7 +22,6 @@ class Attacks(Enum):
 def stabbing_trajectory_maker(num_timesteps, length, width, numpoints, separation):
     
     points = np.linspace(0,1,int(num_timesteps/2)+1)*length
-
     points = list(points)
     points += points[::-1]
     points = np.array(points)
@@ -84,9 +83,9 @@ STAB_TRAJECTORY = stabbing_trajectory_maker(50, 30, 6, 8, 5)
 SWEEP_TRAJECTORY = circular_trajectory_maker(75, 80, 10, 3)
 BLAST_TRAJECTORY = stabbing_trajectory_maker(120, 1200, 20, 5, 5)
 
-STAB_ATTACK = Attack(10, 50, STAB_TRAJECTORY)
-BLAST_ATTACK = Attack(50, 60, BLAST_TRAJECTORY)
-SWEEP_TRAJECTORY = Attack(20, 50, SWEEP_TRAJECTORY)
+STAB_ATTACK = Attack(0.1, 50, STAB_TRAJECTORY)
+BLAST_ATTACK = Attack(5, 60, BLAST_TRAJECTORY)
+SWEEP_TRAJECTORY = Attack(0.2, 50, SWEEP_TRAJECTORY)
 
 class Game:
     arena_length = 1920
@@ -127,15 +126,17 @@ class Game:
 
         hero_distance = np.linalg.norm(hero_pos - self.adversary.damagepoints, axis=1)
         adversary_distance = np.linalg.norm(adversary_pos - self.hero.damagepoints, axis=1)
-    
+        print(adversary_distance)
         # # # Hero takes damage
-        if (np.min(hero_distance) < self.hero.hitbox_width):
+        if (np.min(hero_distance) < self.hero.hitbox_width - 15):
             self.hero.health -= self.adversary.damage
+            
 
 
         # # Adversary takes damage
-        if (np.min(adversary_distance) < self.adversary.hitbox_width):
+        if (np.min(adversary_distance) < self.adversary.hitbox_width - 15):
             self.adversary.health -= self.hero.damage
+            print(self.hero.health)
 
 
 # ALL HITBOXES ARE ADDED TO PLAYER POSITION! so if players position 
@@ -145,7 +146,7 @@ class Player:
 
     mode = Mode.NORMAL
    
-    def __init__(self, hitbox, max_movement_speed, max_rotation_speed, max_health, position, theta, arena_width, arena_length):
+    def __init__(self, hitbox, max_movement_speed, max_rotation_speed, max_health, position, theta, arena_width, arena_length, is_hero=False):
         self.hitbox_width = hitbox['width']
         self.hitbox_height = hitbox['height']
         self.max_health = max_health
@@ -161,14 +162,16 @@ class Player:
 
         self.Attack = None
         self.damagepoints = np.array([self.position])
-        self.attack_damage = 0
+        self.damage = 0
+        self.is_hero = is_hero
 
 
     def one_step(self):
 
         # Player chooses movement and attack/defensive action
         #self.position = self.position + (np.random.rand(2) - 0.5)
-        self.theta = 0 #0.1
+        if not self.is_hero:
+            self.theta = self.theta + 1
 
         if self.theta > 360:
             self.theta -= 360
@@ -183,6 +186,8 @@ class Player:
         # Mode Stuff
         if self.mode == Mode.ATTACKING:
 
+
+            self.damage = self.Attack.damage
             damagepoints = self.Attack.position
             damagepoints = (rot @ damagepoints.T).T
 
@@ -202,7 +207,7 @@ class Player:
 
             # if choose to attack....
             
-            self.Attack = SWEEP_TRAJECTORY# model input
+            self.Attack = STAB_ATTACK# model input
             self.mode = Mode.ATTACKING
 
             # if choose to shield...
@@ -213,8 +218,8 @@ Default_Hitbox = {
     'width': 32,
     'height': 32
 }
-hero = Player(Default_Hitbox, 1, 1, 10, np.array([600,300]), 0, 1920, 960)
-adversary = Player(Default_Hitbox, 1, 1, 10, np.array([600,600]), 0, 1920, 960)
+hero = Player(Default_Hitbox, 1, 1, 100, np.array([600,300]), 0, 1920, 960, True)
+adversary = Player(Default_Hitbox, 1, 1, 100, np.array([600,600]), 0, 1920, 960)
 game = Game(hero, adversary, 10)
 
 game.one_step()
