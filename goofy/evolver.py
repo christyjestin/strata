@@ -37,7 +37,7 @@ class Evolver(nn.Module):
         self.weapon_self_attn = nn.MultiheadAttention(self.weapon_dim + self.weapon_pos_embedding_dim, num_heads, 
                                                       batch_first = True)
         self.weapon_to_player_attn = nn.MultiheadAttention(self.weapon_dim + self.weapon_pos_embedding_dim, num_heads,
-                                                           kdim = self.player_dim, vdim = self.player_dim, batch_first = True)
+                                                    kdim = self.player_dim, vdim = self.player_dim, batch_first = True)
         self.weapon_MLP = nn.Sequential([
             nn.Linear(self.weapon_MLP_input_dim, 15),
             nn.ReLU(),
@@ -102,10 +102,10 @@ class Evolver(nn.Module):
 
         # use respective forward functions
         player_weapon_preds = self.weapon_forward(player_weapon_tokens, player_token, opponent_token, actions, 
-                                                misaligned_dims = misaligned_dims, mode = mode)
+                                                  misaligned_dims = misaligned_dims, mode = mode)
         player_token_preds = self.player_forward(player_token, actions, misaligned_dims = misaligned_dims, mode = mode)
         opponent_health_preds = self.opponent_health_forward(opponent_health, player_weapon_tokens, player_token, 
-                                                               opponent_token, actions, misaligned_dims = misaligned_dims)
+                                                             opponent_token, actions, misaligned_dims = misaligned_dims)
 
         # replicate the parts of state that don't evolve to match the number of actions
         if misaligned_dims:
@@ -257,22 +257,6 @@ class Evolver(nn.Module):
     def player_pos_embedding(self):
         return self.player_pos_embedding_module(torch.arange(2))
 
-    # computes loss, back propagates, and steps with the optimizer
-    # returns a namedtuple with the 3 components of evolver loss
-    def backward_pass(self, states, actions, next_states, evolving_adversary):
-        # reverse the player and opponent states if you're evolving the adversary
-        # there's no need to flip back because we won't ever look at the outputs of the forward pass
-        if evolving_adversary:
-            states = self.flip_state(states)
-            next_states = self.flip_state(next_states)
-
-        next_state_preds = self.forward(states, actions, misaligned_dims = False)
-        loss, loss_breakdown = self.loss_function(next_state_preds, next_states)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        return loss_breakdown
-
     # helper function for computing loss
     def extract_mutable_state(self, next_states):
         player_state, opponent_state = torch.split(next_states, 2, dim = 1)
@@ -281,9 +265,14 @@ class Evolver(nn.Module):
         player_weapon_tokens = player_weapon_tokens.reshape(-1, NUM_WEAPON_TOKENS, self.weapon_dim)
         return (player_weapon_tokens, player_token, opponent_health)
 
-    def loss_function(self, next_state_preds, next_states):
+    def loss(self, next_state_preds, next_states, evolving_adversary):
         assert next_state_preds.shape == next_states.shape
         assert len(next_states.shape) == 2 and next_states.shape[1] == self.state_dim
+
+        # reverse the player and opponent states if you're evolving the adversary
+        if evolving_adversary:
+            next_state_preds = self.flip_state(next_state_preds)
+            next_states = self.flip_state(next_states)
 
         # split up state
         weapon_tokens, player_token, opponent_health = self.extract_mutable_state(next_states)
@@ -295,7 +284,8 @@ class Evolver(nn.Module):
         opponent_health_loss = self.compute_opponent_health_loss(opponent_health_preds, opponent_health)
 
         total_loss = player_token_loss + weapon_token_loss + opponent_health_loss
-        return (total_loss, EvolverLoss(player_token_loss.item(), weapon_token_loss.item(), opponent_health_loss.item()))
+        loss_breakdown = EvolverLoss(player_token_loss.item(), weapon_token_loss.item(), opponent_health_loss.item())
+        return (total_loss, loss_breakdown)
 
     # note that weight must be a 2d row vector with the same final dimension as preds and target
     def weighted_L2_loss(self, preds, target, weight):
@@ -309,7 +299,8 @@ class Evolver(nn.Module):
         assert preds.shape == target.shape, "preds and target must be the same shape"
         assert len(preds.shape) == 2 and preds.shape[1] == self.player_dim
 
-        L2_loss = self.weighted_L2_loss(preds[:, :-NUM_PLAYER_MODES], target[:, :-NUM_PLAYER_MODES], self.player_token_L2_loss_weight)
+        L2_loss = self.weighted_L2_loss(preds[:, :-NUM_PLAYER_MODES], target[:, :-NUM_PLAYER_MODES], 
+                                        self.player_token_L2_loss_weight)
         CE_loss = self.CE_loss(preds[:, -NUM_PLAYER_MODES:], target[:, -NUM_PLAYER_MODES:])
         return L2_loss + self.player_token_CE_lambda * CE_loss
 
