@@ -1,6 +1,9 @@
 import numpy as np
 import torch
 from torch import nn
+import torch.nn.functional as F
+from torch.distributions.categorical import Categorical
+from torch.distributions.beta import Beta
 
 from policy_predictor import PolicyPredictor
 from value_predictor import ValuePredictor
@@ -9,15 +12,32 @@ from evolver import Evolver
 
 from model_constants import *
 
+# helper functions for sampling and computing log probability with Beta distributions
+def sample_beta(beta_params):
+    assert len(beta_params.shape) == 2 and beta_params.shape[1] == 2
+    return Beta(beta_params[:, 0], beta_params[:, 1]).sample()
+
+def beta_log_prob(beta_params, arg):
+    assert len(beta_params.shape) == 2 and beta_params.shape[1] == 2
+    return Beta(beta_params[:, 0], beta_params[:, 1]).log_prob(arg)
+
+# helper functions to go from (-limit, limit) to (0, 1) and vice versa
+def downscale_from_limits(vals, limit):
+    return 0.5 * (vals / limit) + 0.5
+
+def upscale_to_limits(vals, limit):
+    return 2 * limit * (vals - 0.5)
+
 class AdaptiveEvolver(nn.Module):
     # TODO: add checks on init parameters
-    def __init__(self, search_depth, trajectory_count, branching_number, bloom_factor):
+    def __init__(self, search_depth: int, trajectory_count: int, branching_number: int, bloom_factor: int):
         super().__init__()
         self.state_dim = STATE_DIM
         self.policy_dim = None
         self.strategy_dim = STRATEGY_DIM
         self.action_dim = ACTION_DIM
 
+        # init submodules
         # M: memory module that distills the opponent's strategy into a latent vector
         self.memory = None
         # c_t: latent vector that serves as a running tally of adversary's strategy
@@ -28,12 +48,15 @@ class AdaptiveEvolver(nn.Module):
         # i.e. this model approximates the one step for a single player
         # takes the current state and the action (or predicted action for adversary) as input
         self.evolver = Evolver()
+        # hero policy is more complex than adversary policy since we sample far more actions from each hero policy
         # HP: predicts a search policy for the hero's next actions given the state and the adversary's strategy vector
-        self.hero_policy = PolicyPredictor(self.conditional_analyzer)
-        # AP: predicts the adversary's next action given the state adn the adversary's strategy vector
-        self.adversary_policy = PolicyPredictor(self.conditional_analyzer)
+        self.hero_policy = PolicyPredictor(self.conditional_analyzer, num_mixture_components = 4)
+        # AP: predicts the adversary's next action given the state and the adversary's strategy vector
+        self.adversary_policy = PolicyPredictor(self.conditional_analyzer, num_mixture_components = 1)
         # V: predicts the value of the current state over a finite time horizon h given adversary's strategy vector
         self.value_predictor = ValuePredictor(self.conditional_analyzer)
+
+        # model constants
         # h: time horizon over which we want to maximize value
         self.time_horizon = TIME_HORIZON
         # k: length of state/action trajectory that is considered (not only including initial state)
@@ -105,14 +128,14 @@ class AdaptiveEvolver(nn.Module):
         search_policies = self.hero_policy(states, self.adversary_strategy, mode = SEARCH_MODE) # n x p
         # sample b actions per policy/state and evolve state accordingly
         b = (self.bloom_factor * self.trajectory_count) if depth == 0 else self.branching_number
-        candidate_actions = self.sample_actions(search_policies, num_samples = b, for_adversary = False) # nb x a
+        candidate_actions = self.sample_actions(search_policies, num_samples = b) # nb x a
         partial_next_states = self.evolver(states, candidate_actions, misaligned_dims = True, 
                                            is_adversary_step = False, mode = SEARCH_MODE) # E(n x s, nb x a) -> nb x s
 
         # predict what action the adversary will take in response and evolve state accordingly
         adversary_policies = self.adversary_policy(partial_next_states, self.adversary_strategy, 
                                                    mode = SEARCH_MODE) # nb x p
-        adversary_actions = self.sample_actions(adversary_policies, num_samples = 1, for_adversary = True) # nb x a
+        adversary_actions = self.sample_actions(adversary_policies, num_samples = 1) # nb x a
         candidate_next_states = self.evolver(partial_next_states, adversary_actions, misaligned_dims = False, 
                                              is_adversary_step = True, mode = SEARCH_MODE) # E(nb x s, nb x a) -> nb x s
 
@@ -124,10 +147,64 @@ class AdaptiveEvolver(nn.Module):
         candidate_values = v_accumulated + v_projected.flatten() # nb
         return candidate_next_states, candidate_actions, candidate_values # (nb x s, nb x a, nb)
 
-    # sample num_samples unique actions from the policy pi
-    def sample_actions(self, pi, num_samples: int, for_adversary: bool):
-        assert len(pi.shape) == 2 and pi.shape[1] == self.policy_dim
-        pass
+    # sample num_samples unique actions from each policy in pi
+    def sample_actions(self, pi: ActionPolicy, num_samples: int):
+        n = pi.logits.shape[0] # number of policies
+        num_mixture_components = pi.beta_parameters.shape[2]
+
+        # sample from each policy (each row vector of pi.logits) and flatten such that 
+        # contiguous actions correspond to the same policy (and ultimately same state)
+        actions = Categorical(logits = pi.logits).sample((num_samples,)).T.flatten() # b x n -> n x b -> (nb,)
+        # randomly choose a mixture component
+        mixture_index = torch.randint(num_mixture_components, size = actions.shape) # (nb,)
+        # repeat interleave so that contiguous rows of the constructed parameter matrix correspond to same policy
+        policy_index = torch.repeat_interleave(torch.arange(n), num_samples) # (nb,)
+        beta_parameters = pi.beta_parameters[policy_index, actions, mixture_index] # (nb, 6)
+        beta_x, beta_y, beta_theta = torch.chunk(beta_parameters, 3, dim = 1) # (nb, 6) -> (nb, 2), (nb, 2), (nb, 2)
+        x, y, theta = sample_beta(beta_x), sample_beta(beta_y), sample_beta(beta_theta) # (nb,), (nb,), (nb,)
+
+        # rescale movement values to (-lim, lim) instead of (0, 1)
+        # also encode theta as sin(th) and cos(th) to avoid issues with periodicity
+        x = upscale_to_limits(x, DX_LIMIT)
+        y = upscale_to_limits(y, DY_LIMIT)
+        theta = upscale_to_limits(theta, DTHETA_LIMIT)
+        movements = torch.column_stack((x, y, torch.sin(theta), torch.cos(theta))) # (nb, 4)
+
+        one_hot_actions = F.one_hot(actions, num_classes = NUM_ACTIONS)
+        output = torch.cat((one_hot_actions, movements), dim = 1)
+        assert output.shape == (n * num_samples, ACTION_DIM)
+        return output
+
+    # compute log prob of an action being drawn from a given policy pi
+    def compute_action_log_prob(self, pi: ActionPolicy, actions: torch.Tensor):
+        assert pi.logits.shape[0] == actions.shape[0], "policies and actions must align"
+
+        n = pi.logits.shape[0]
+        one_hot_actions, movements = torch.split(actions, [NUM_ACTIONS, NUM_MOVEMENT_VALS], dim = 1)
+
+        # rescale movement values to (0, 1) so that they're in the support of the standard Beta distribution
+        x, y, sin, cos = torch.unbind(movements, dim = 1) # n x 4 -> (n,), (n,), (n,), (n,)
+        theta = torch.arctan(sin / cos)
+        theta = downscale_from_limits(theta, DTHETA_LIMIT)
+        x = downscale_from_limits(x, DX_LIMIT)
+        y = downscale_from_limits(y, DY_LIMIT)
+
+        # compute probability of action
+        actions = torch.argmax(one_hot_actions, dim = 1)
+        action_prob = Categorical(logits = pi.logits).log_prob(actions) # (n,)
+
+        # compute probability of movement given that action
+        mixture_models = pi.beta_parameters[torch.arange(n), actions] # n x num_mixtures x 6
+        mixture_log_probs = []
+        for component in torch.unbind(mixture_models, dim = 1):
+            beta_x, beta_y, beta_theta = torch.chunk(component, 3, dim = 1) # (n, 6) -> (n, 2), (n, 2), (n, 2)
+            component_log_prob = beta_log_prob(beta_x, x) + beta_log_prob(beta_y, y) + beta_log_prob(beta_theta, theta)
+            mixture_log_probs.append(component_log_prob) # each element is (n,)
+        # we're using a mixture of equal parts, so p(mix) = p(c_1) + p(c_2) + ... + p(c_m) / m
+        movement_prob = torch.logsumexp(torch.stack(mixture_log_probs), dim = 0) - np.log(len(mixture_log_probs))
+
+        assert action_prob.shape == movement_prob.shape == (n,)
+        return torch.sum(action_prob + movement_prob)
 
     # computes the reward by calculating the change in health differential from s_t to s_t' where t' >= t
     def reward(self, initial_state: torch.Tensor, later_states: torch.Tensor):
@@ -138,9 +215,6 @@ class AdaptiveEvolver(nn.Module):
     def health_differential(self, s: torch.Tensor):
         assert len(s.shape) == 2 and s.shape[1] == self.state_dim
         return s[:, HERO_HEALTH_INDEX] - s[:, ADVERSARY_HEALTH_INDEX]
-
-    def compute_action_log_prob(self, pi, a):
-        pass
 
     def backward(self, hero_states, adversary_states, hero_actions, adversary_actions):
         n = hero_actions.shape[0]
