@@ -16,7 +16,7 @@ assert len(WEAPON_L2_WEIGHT) == WEAPON_TOKEN_LENGTH - NUM_WEAPON_TYPES
 NUM_WEAPON_TOKENS = 6
 
 # the indices to keep when trimming a player token to be the same length as the weapon token
-PLAYER_TRIM_INDICES = [0, 1, 4, 5, 6, 7] # 7 is a placeholder
+PLAYER_TRIM_INDICES = [0, 1, 4, 6, 7, 8]
 assert len(PLAYER_TRIM_INDICES) == WEAPON_TOKEN_LENGTH, "trim indices must match weapon token length"
 assert len(PLAYER_TRIM_INDICES) <= PLAYER_TOKEN_LENGTH, "trim indices must be compatible with player token length"
 
@@ -44,6 +44,8 @@ TIME_HORIZON = 20 # TODO: change after discussing with Jacob
 EvolverLoss = namedtuple('EvolverLoss', ['player_token', 'weapon_token', 'opponent_health'])
 
 ActionPolicy = namedtuple('ActionPolicy', ['logits', 'beta_parameters'])
+
+Strategy = namedtuple('Strategy', ['hidden', 'cell'])
 
 SEARCH_MODE = 'search_mode'
 BACKPROP_MODE = 'backprop_mode'

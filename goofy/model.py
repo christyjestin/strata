@@ -9,6 +9,7 @@ from policy_predictor import PolicyPredictor
 from value_predictor import ValuePredictor
 from conditional_analyzer import ConditionalAnalyzer
 from evolver import Evolver
+from strategy_distiller import StrategyDistiller
 
 from model_constants import *
 
@@ -28,20 +29,19 @@ def downscale_from_limits(vals, limit):
 def upscale_to_limits(vals, limit):
     return 2 * limit * (vals - 0.5)
 
-class AdaptiveEvolver(nn.Module):
+class STRATA(nn.Module):
     # TODO: add checks on init parameters
     def __init__(self, search_depth: int, trajectory_count: int, branching_number: int, bloom_factor: int):
         super().__init__()
         self.state_dim = STATE_DIM
-        self.policy_dim = None
-        self.strategy_dim = STRATEGY_DIM
         self.action_dim = ACTION_DIM
+        self.strategy_dim = STRATEGY_DIM
 
         # init submodules
-        # M: memory module that distills the opponent's strategy into a latent vector
-        self.memory = None
-        # c_t: latent vector that serves as a running tally of adversary's strategy
-        self.adversary_strategy = None
+        # SD: memory module that distills the opponent's strategy into a latent vector
+        self.strategy_distiller = StrategyDistiller()
+        # h_t, c_t: latent vectors that serves as running tallies of adversary's strategy
+        self.adversary_strategy = self.strategy_distiller.init_strategy()
         # CA: conditional analyzer that is used in both policy and value prediction but never directly called
         self.conditional_analyzer = ConditionalAnalyzer()
         # E: predicts the next state by evolving only the portions of state that belong to one of the players
@@ -72,13 +72,15 @@ class AdaptiveEvolver(nn.Module):
         self.optimizer = None
 
     # produces an action a_t when given a state s_t
+    # also takes in adversary's previous state action pair (after first move) to update running tally of strategy
     @torch.no_grad() # backward pass only happens at the end of the game so no need to build computational graph here
-    def forward(self, s_t: torch.Tensor):
+    def forward(self, s_t: torch.Tensor, adversary_pair = None):
         s_t = s_t.reshape(1, self.state_dim) # state needs to be 2d for later functions
 
-        # TODO: revisit after writing LSTM
-        # only update adversary strategy with the true current state s_t
-        self.adversary_strategy = self.memory(self.adversary_strategy, s_t)
+        # only update adversary strategy with true adversary state and action (i.e. outside of tree search)
+        if adversary_pair is not None:
+            self.adversary_strategy = self.strategy_distiller(self.adversary_strategy, *adversary_pair, 
+                                                              mode = SEARCH_MODE)
 
         # first level of tree search is handled separately outside of the loop since we want to setup initial actions
         candidate_next_states, candidate_actions, candidate_values = self.expand_search_tree(s_t, s_t, depth = 0)
@@ -125,7 +127,7 @@ class AdaptiveEvolver(nn.Module):
     def expand_search_tree(self, initial_state: torch.Tensor, states: torch.Tensor, depth: int):
         assert len(states.shape) == 2 and states.shape[1] == self.state_dim # states is n x s
         assert initial_state.shape == (1, self.state_dim)
-        search_policies = self.hero_policy(states, self.adversary_strategy, mode = SEARCH_MODE) # n x p
+        search_policies = self.hero_policy(states, self.adversary_strategy.hidden, mode = SEARCH_MODE) # n x p
         # sample b actions per policy/state and evolve state accordingly
         b = (self.bloom_factor * self.trajectory_count) if depth == 0 else self.branching_number
         candidate_actions = self.sample_actions(search_policies, num_samples = b) # nb x a
@@ -133,7 +135,7 @@ class AdaptiveEvolver(nn.Module):
                                            is_adversary_step = False, mode = SEARCH_MODE) # E(n x s, nb x a) -> nb x s
 
         # predict what action the adversary will take in response and evolve state accordingly
-        adversary_policies = self.adversary_policy(partial_next_states, self.adversary_strategy, 
+        adversary_policies = self.adversary_policy(partial_next_states, self.adversary_strategy.hidden, 
                                                    mode = SEARCH_MODE) # nb x p
         adversary_actions = self.sample_actions(adversary_policies, num_samples = 1) # nb x a
         candidate_next_states = self.evolver(partial_next_states, adversary_actions, misaligned_dims = False, 
@@ -142,7 +144,7 @@ class AdaptiveEvolver(nn.Module):
         # compute value accumulated so far by comparing each next state to the initial state
         v_accumulated = self.reward(initial_state, candidate_next_states) # (1 x s, nb x s) -> (nb,)
         # project the value of each state over the remaining time horizon
-        v_projected = self.value_predictor(candidate_next_states, self.adversary_strategy, mode = SEARCH_MODE, 
+        v_projected = self.value_predictor(candidate_next_states, self.adversary_strategy.hidden, mode = SEARCH_MODE, 
                                            remaining_time_horizon = self.time_horizon - depth - 1) # nb x 1
         candidate_values = v_accumulated + v_projected.flatten() # nb
         return candidate_next_states, candidate_actions, candidate_values # (nb x s, nb x a, nb)
@@ -226,8 +228,13 @@ class AdaptiveEvolver(nn.Module):
         assert adversary_actions.shape == (n, self.action_dim)
 
         # run the memory module
-        # TODO: implement this
-        strategies = None
+        init_strategy = self.strategy_distiller.init_strategy()
+        # final strategy vector won't be used by any downstream modules, so ignore the last adversary (s, a) pair
+        strategies = self.strategy_distiller(init_strategy, adversary_states[:-1], adversary_actions[:-1], 
+                                             mode = BACKPROP_MODE)
+        # add on the empty (all zeros) init strategy as the first row of strategy vectors
+        strategies = torch.cat((init_strategy.hidden, strategies), dim = 0)
+        assert strategies.shape == (n, self.strategy_dim)
 
         # compute NLL loss for policy predictors
         hero_pis = self.hero_policy(hero_states[:-1], strategies, BACKPROP_MODE)
