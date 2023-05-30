@@ -1,9 +1,10 @@
 import numpy as np
 import torch
-from torch import nn
+from torch import nn, Tensor
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 from torch.distributions.beta import Beta
+from typing import Tuple, Dict, Optional
 
 from policy_predictor import PolicyPredictor
 from value_predictor import ValuePredictor
@@ -14,24 +15,24 @@ from strategy_distiller import StrategyDistiller
 from model_constants import *
 
 # helper functions for sampling and computing log probability with Beta distributions
-def sample_beta(beta_params):
+def sample_beta(beta_params: Tensor) -> Tensor:
     assert len(beta_params.shape) == 2 and beta_params.shape[1] == 2
     return Beta(beta_params[:, 0], beta_params[:, 1]).sample()
 
-def beta_log_prob(beta_params, arg):
+def beta_log_prob(beta_params: Tensor, arg: Tensor) -> Tensor:
     assert len(beta_params.shape) == 2 and beta_params.shape[1] == 2
     return Beta(beta_params[:, 0], beta_params[:, 1]).log_prob(arg)
 
 # helper functions to go from (-limit, limit) to (0, 1) and vice versa
-def downscale_from_limits(vals, limit):
+def downscale_from_limits(vals: Tensor, limit: float) -> Tensor:
     return 0.5 * (vals / limit) + 0.5
 
-def upscale_to_limits(vals, limit):
+def upscale_to_limits(vals: Tensor, limit: float) -> Tensor:
     return 2 * limit * (vals - 0.5)
 
 class STRATA(nn.Module):
     # TODO: add checks on init parameters
-    def __init__(self, search_depth: int, trajectory_count: int, branching_number: int, bloom_factor: int):
+    def __init__(self, search_depth: int, trajectory_count: int, branching_number: int, bloom_factor: int) -> None:
         super().__init__()
         self.state_dim = STATE_DIM
         self.action_dim = ACTION_DIM
@@ -74,7 +75,7 @@ class STRATA(nn.Module):
     # produces an action a_t when given a state s_t
     # also takes in adversary's previous state action pair (after first move) to update running tally of strategy
     @torch.no_grad() # backward pass only happens at the end of the game so no need to build computational graph here
-    def forward(self, s_t: torch.Tensor, adversary_pair = None):
+    def forward(self, s_t: Tensor, adversary_pair: Optional[Tuple[Tensor, Tensor]] = None) -> Tensor:
         s_t = s_t.reshape(1, self.state_dim) # state needs to be 2d for later functions
 
         # only update adversary strategy with true adversary state and action (i.e. outside of tree search)
@@ -118,13 +119,13 @@ class STRATA(nn.Module):
             if i == self.search_depth - 1:
                 # TODO: consider switching to plurality vote instead of argmax
                 # index before argmaxing so that you're lined up with the initial_action_idx array
-                best_trajectory_index = torch.argmax(candidate_values[indices]).item()
+                best_trajectory_index: int = torch.argmax(candidate_values[indices]).item()
 
-        best_initial_action_index = initial_action_idx_for_candidates[best_trajectory_index]
+        best_initial_action_index: int = initial_action_idx_for_candidates[best_trajectory_index]
         return candidate_initial_actions[best_initial_action_index]
 
     # expands the search tree by one level
-    def expand_search_tree(self, initial_state: torch.Tensor, states: torch.Tensor, depth: int):
+    def expand_search_tree(self, initial_state: Tensor, states: Tensor, depth: int) -> Tuple[Tensor, Tensor, Tensor]:
         assert len(states.shape) == 2 and states.shape[1] == self.state_dim # states is n x s
         assert initial_state.shape == (1, self.state_dim)
         search_policies = self.hero_policy(states, self.adversary_strategy.hidden, mode = SEARCH_MODE) # n x p
@@ -150,7 +151,7 @@ class STRATA(nn.Module):
         return candidate_next_states, candidate_actions, candidate_values # (nb x s, nb x a, nb)
 
     # sample num_samples unique actions from each policy in pi
-    def sample_actions(self, pi: ActionPolicy, num_samples: int):
+    def sample_actions(self, pi: ActionPolicy, num_samples: int) -> Tensor:
         n = pi.logits.shape[0] # number of policies
         num_mixture_components = pi.beta_parameters.shape[2]
 
@@ -178,7 +179,7 @@ class STRATA(nn.Module):
         return output
 
     # compute log prob of an action being drawn from a given policy pi
-    def compute_action_log_prob(self, pi: ActionPolicy, actions: torch.Tensor):
+    def compute_action_log_prob(self, pi: ActionPolicy, actions: Tensor) -> Tensor:
         assert pi.logits.shape[0] == actions.shape[0], "policies and actions must align"
 
         n = pi.logits.shape[0]
@@ -193,7 +194,7 @@ class STRATA(nn.Module):
 
         # compute probability of action
         actions = torch.argmax(one_hot_actions, dim = 1)
-        action_prob = Categorical(logits = pi.logits).log_prob(actions) # (n,)
+        action_prob: Tensor = Categorical(logits = pi.logits).log_prob(actions) # (n,)
 
         # compute probability of movement given that action
         mixture_models = pi.beta_parameters[torch.arange(n), actions] # n x num_mixtures x 6
@@ -203,22 +204,24 @@ class STRATA(nn.Module):
             component_log_prob = beta_log_prob(beta_x, x) + beta_log_prob(beta_y, y) + beta_log_prob(beta_theta, theta)
             mixture_log_probs.append(component_log_prob) # each element is (n,)
         # we're using a mixture of equal parts, so p(mix) = p(c_1) + p(c_2) + ... + p(c_m) / m
-        movement_prob = torch.logsumexp(torch.stack(mixture_log_probs), dim = 0) - np.log(len(mixture_log_probs))
+        movement_prob = torch.logsumexp(torch.stack(mixture_log_probs), dim = 0) # log(p(c_1) + p(c_2) + ... + p(c_m))
+        movement_prob -= torch.tensor(np.log(len(mixture_log_probs))) # subtracting log(m) = adding log(1 / m)
 
         assert action_prob.shape == movement_prob.shape == (n,)
         return torch.sum(action_prob + movement_prob)
 
     # computes the reward by calculating the change in health differential from s_t to s_t' where t' >= t
-    def reward(self, initial_state: torch.Tensor, later_states: torch.Tensor):
+    def reward(self, initial_state: Tensor, later_states: Tensor) -> Tensor:
         return self.health_differential(later_states) - self.health_differential(initial_state)
 
     # computes hero health minus adversary health at some time t given state s_t
     # assumes 2d input for (potentially) multiple states
-    def health_differential(self, s: torch.Tensor):
+    def health_differential(self, s: Tensor) -> Tensor:
         assert len(s.shape) == 2 and s.shape[1] == self.state_dim
         return s[:, HERO_HEALTH_INDEX] - s[:, ADVERSARY_HEALTH_INDEX]
 
-    def backward(self, hero_states, adversary_states, hero_actions, adversary_actions):
+    def backward(self, hero_states: Tensor, adversary_states: Tensor, hero_actions: Tensor, 
+                 adversary_actions: Tensor) -> Dict[str, float]:
         n = hero_actions.shape[0]
         # there should be one extra hero state
         # hero state -> hero action -> adversary state -> adversary action -> hero state -> ...
@@ -260,7 +263,7 @@ class STRATA(nn.Module):
         # cumulatively sum rewards to get values over different time horizons
         value_targets = np.concatenate([np.cumsum(rewards[i : i + self.time_horizon - 1]) for i in range(n)])
         assert value_preds.shape == value_targets.shape, "preds and targets must align"
-        value_loss = self.value_loss(value_preds, value_targets)
+        value_loss: Tensor = self.value_loss(value_preds, value_targets)
 
         # combine loss
         loss = hero_policy_NLL + adversary_policy_NLL + HE_loss + AE_loss + value_loss
@@ -268,13 +271,13 @@ class STRATA(nn.Module):
         loss.backward()
         self.optimizer.step()
         return {
-            'hero policy': hero_policy_NLL,
-            'adversary policy': adversary_policy_NLL,
+            'hero policy': hero_policy_NLL.item(),
+            'adversary policy': adversary_policy_NLL.item(),
             'hero weapon': HE_loss_breakdown.weapon_token,
             'hero player': HE_loss_breakdown.player_token,
             'hero opponent health': HE_loss_breakdown.opponent_health,
             'adversary weapon': AE_loss_breakdown.weapon_token,
             'adversary player': AE_loss_breakdown.player_token,
             'adversary opponent health': AE_loss_breakdown.opponent_health,
-            'value': value_loss
+            'value': value_loss.item()
         }

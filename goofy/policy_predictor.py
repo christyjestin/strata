@@ -1,11 +1,11 @@
 import torch
-from torch import nn
+from torch import nn, Tensor
 
 from model_constants import *
 from conditional_analyzer import ConditionalAnalyzer
 
 class PolicyPredictor(nn.Module):
-    def __init__(self, conditional_analyzer: ConditionalAnalyzer, num_mixture_components: int):
+    def __init__(self, conditional_analyzer: ConditionalAnalyzer, num_mixture_components: int) -> None:
         super().__init__()
         self.conditional_analyzer = conditional_analyzer
         self.input_dim = conditional_analyzer.output_dim
@@ -31,7 +31,7 @@ class PolicyPredictor(nn.Module):
 
         self.relu = nn.ReLU() # extra ReLU to generate parameters for Beta distributions
 
-    def forward(self, states, strategies, mode):
+    def forward(self, states: Tensor, strategies: Tensor, mode: str) -> ActionPolicy:
         n = states.shape[0] # batch size
         analysis = self.conditional_analyzer(states, strategies, mode)
         mlp_output = self.MLP(analysis)

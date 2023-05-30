@@ -1,25 +1,25 @@
 import torch
-from torch import nn, optim
+from torch import nn
 import torch.nn.functional as F
-from itertools import chain
+from typing import Tuple
 
 from model_constants import *
 
 # TODO: set global low precision fp dtype
 
 # trim a few unnecessary positions from a player token to create a token with same length as weapons
-def trim_token(token):
+def trim_token(token: Tensor) -> Tensor:
     assert len(token.shape) == 2 and token.shape[1] == PLAYER_TOKEN_LENGTH, "player token must be two dimensional"
     return token[:, PLAYER_TRIM_INDICES]
 
 # using final dimension as logits, argmax to determine the class and then encode as a one hot vector
-def argmax_logits_to_one_hot(tensor, num_classes):
+def argmax_logits_to_one_hot(tensor: Tensor, num_classes: int) -> Tensor:
     tensor = torch.argmax(tensor, dim = -1, keepdim = False)
     return F.one_hot(tensor, num_classes = num_classes)
 
 class Evolver(nn.Module):
-    def __init__(self, weapon_pos_embedding_dim = 3, player_pos_embedding_dim = 2, num_heads = 3, 
-                 player_token_cross_entropy_lambda = 1, weapon_token_cross_entropy_lambda = 1):
+    def __init__(self, weapon_pos_embedding_dim: int = 3, player_pos_embedding_dim: int = 2, num_heads: int = 3, 
+                 player_token_cross_entropy_lambda: float = 1, weapon_token_cross_entropy_lambda: float = 1):
         super().__init__()
         self.action_dim = ACTION_DIM
         self.player_dim = PLAYER_TOKEN_LENGTH
@@ -76,11 +76,10 @@ class Evolver(nn.Module):
         attn_models = [self.weapon_self_attn, self.weapon_to_player_attn, self.player_to_weapon_attn, self.player_self_attn]
         MLP_models = [self.weapon_MLP, self.player_MLP, self.opponent_health_MLP]
         all_models = [self.weapon_pos_embedding_module, *attn_models, *MLP_models]
-        params = [model.parameters() for model in all_models]
-        self.optimizer = optim.Adam(chain(*params), lr = 1e-3)
 
     # predicts next state given current state and action
-    def forward(self, states, actions, misaligned_dims, is_adversary_step, mode):
+    def forward(self, states: Tensor, actions: Tensor, misaligned_dims: bool, is_adversary_step: bool, 
+                mode: str) -> Tensor:
         assert len(states.shape) == 2 and states.shape[1] == self.state_dim # n x s
         assert len(actions.shape) == 2 and actions.shape[1] == self.action_dim # nb x a
         assert misaligned_dims or states.shape[0] == actions.shape[0], \
@@ -128,7 +127,8 @@ class Evolver(nn.Module):
 
     # predicts next state for all weapon tokens
     # note that w always refers to NUM_WEAPON_TOKENS
-    def weapon_forward(self, player_weapon_tokens, player_token, opponent_token, actions, misaligned_dims, mode):
+    def weapon_forward(self, player_weapon_tokens: Tensor, player_token: Tensor, opponent_token: Tensor, 
+                       actions: Tensor, misaligned_dims: bool, mode: str) -> Tensor:
         assert len(player_weapon_tokens.shape) == 2 and \
                 player_weapon_tokens.shape[1] == NUM_WEAPON_TOKENS * self.weapon_dim
         assert len(player_token.shape) == 2 and player_token.shape[1] == self.player_dim
@@ -179,7 +179,7 @@ class Evolver(nn.Module):
         return weapon_outputs
 
     # predicts next state for player token
-    def player_forward(self, player_token, actions, misaligned_dims, mode):
+    def player_forward(self, player_token: Tensor, actions: Tensor, misaligned_dims: bool, mode: str) -> Tensor:
         assert len(player_token.shape) == 2 and player_token.shape[1] == self.player_dim
         assert len(actions.shape) == 2 and actions.shape[1] == self.action_dim
         assert misaligned_dims or player_token.shape[0] == actions.shape[0], \
@@ -208,8 +208,8 @@ class Evolver(nn.Module):
         return player_outputs
 
 
-    def opponent_health_forward(self, opponent_health, player_weapon_tokens, player_token, opponent_token, actions, 
-                                 misaligned_dims):
+    def opponent_health_forward(self, opponent_health: Tensor, player_weapon_tokens: Tensor, player_token: Tensor, 
+                                opponent_token: Tensor, actions: Tensor, misaligned_dims: bool) -> Tensor:
         assert len(opponent_health.shape) == 2 and opponent_health.shape[1] == 1
         assert len(player_weapon_tokens.shape) == 2 and \
             player_weapon_tokens.shape[1] == NUM_WEAPON_TOKENS * self.weapon_dim
@@ -244,28 +244,29 @@ class Evolver(nn.Module):
 
         mlp_input = torch.cat((attn_outputs, actions), dim = 1)
         # the output of the mlp is the change in health rather than the raw final value
-        opponent_health_outputs = opponent_health + self.opponent_health_MLP(mlp_input)
+        opponent_health_outputs: Tensor = opponent_health + self.opponent_health_MLP(mlp_input)
 
         assert opponent_health_outputs.shape == (nb, 1)
         return opponent_health_outputs
 
     @property # helper function since we always use all embeddings
-    def weapon_pos_embedding(self):
+    def weapon_pos_embedding(self) -> Tensor:
         return self.weapon_pos_embedding_module(torch.arange(NUM_WEAPON_TOKENS))
 
     @property # helper function since we always use all embeddings
-    def player_pos_embedding(self):
+    def player_pos_embedding(self) -> Tensor:
         return self.player_pos_embedding_module(torch.arange(2))
 
     # helper function for computing loss
-    def extract_mutable_state(self, next_states):
+    def extract_mutable_state(self, next_states: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         player_state, opponent_state = torch.split(next_states, 2, dim = 1)
         _, player_token, player_weapon_tokens = torch.split(player_state, STATE_SPLIT, dim = 1)
         opponent_health, _, _ = torch.split(opponent_state, STATE_SPLIT, dim = 1)
         player_weapon_tokens = player_weapon_tokens.reshape(-1, NUM_WEAPON_TOKENS, self.weapon_dim)
         return (player_weapon_tokens, player_token, opponent_health)
 
-    def loss(self, next_state_preds, next_states, evolving_adversary):
+    def loss(self, next_state_preds: Tensor, next_states: Tensor, evolving_adversary: bool) -> \
+             Tuple[Tensor, EvolverLoss]:
         assert next_state_preds.shape == next_states.shape
         assert len(next_states.shape) == 2 and next_states.shape[1] == self.state_dim
 
@@ -288,14 +289,14 @@ class Evolver(nn.Module):
         return (total_loss, loss_breakdown)
 
     # note that weight must be a 2d row vector with the same final dimension as preds and target
-    def weighted_L2_loss(self, preds, target, weight):
+    def weighted_L2_loss(self, preds: Tensor, target: Tensor, weight: Tensor) -> Tensor:
         assert preds.shape == target.shape, "preds and target must be the same shape"
         assert len(weight.shape) == 2 and weight.shape[0] == 1, "weight must be a 2d row vector"
         assert preds.shape[-1] == weight.shape[-1], "weight must align with feature dimension of preds and target"
         return torch.mean(((preds - target) ** 2) @ weight.T)
 
     # cross entropy for modes (one hot part of token) and weighted L2 for the rest
-    def compute_player_token_loss(self, preds, target):
+    def compute_player_token_loss(self, preds: Tensor, target: Tensor) -> Tensor:
         assert preds.shape == target.shape, "preds and target must be the same shape"
         assert len(preds.shape) == 2 and preds.shape[1] == self.player_dim
 
@@ -305,7 +306,7 @@ class Evolver(nn.Module):
         return L2_loss + self.player_token_CE_lambda * CE_loss
 
     # cross entropy for weapon type (one hot part of token) and weighted L2 for the rest
-    def compute_weapon_token_loss(self, preds, target):
+    def compute_weapon_token_loss(self, preds: Tensor, target: Tensor) -> Tensor:
         assert preds.shape == target.shape, "preds and target must be the same shape"
         assert len(preds.shape) and preds.shape[1:] == (NUM_WEAPON_TOKENS, self.weapon_dim)
 
@@ -315,11 +316,11 @@ class Evolver(nn.Module):
         return L2_loss + self.weapon_token_CE_lambda * CE_loss
 
     # standard L2
-    def compute_opponent_health_loss(self, preds, target):
+    def compute_opponent_health_loss(self, preds: Tensor, target: Tensor) -> Tensor:
         return torch.mean((preds - target) ** 2)
 
     # flips state from (player state, opponent state) to (opponent state, player state) along dim 1
-    def flip_state(self, state):
+    def flip_state(self, state: Tensor) -> Tensor:
         assert len(state.shape) == 2 and state.shape[1] == self.state_dim
         a, b = torch.split(state, 2, dim = 1)
         return torch.cat((b, a), dim = 1)

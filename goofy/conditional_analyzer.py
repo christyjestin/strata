@@ -1,11 +1,11 @@
 import torch
-from torch import nn
+from torch import nn, Tensor
 
 from model_constants import *
 
 
 class ConditionalAnalyzer(nn.Module):
-    def __init__(self, num_heads = 5):
+    def __init__(self, num_heads: int = 5) -> None:
         super().__init__()
         self.player_dim = PLAYER_TOKEN_LENGTH
         self.weapon_dim = WEAPON_TOKEN_LENGTH
@@ -26,7 +26,7 @@ class ConditionalAnalyzer(nn.Module):
         self.partial_attn = nn.MultiheadAttention(self.embedding_dim, num_heads = num_heads, batch_first = True)
 
     # note that w always refers to NUM_WEAPON_TOKENS
-    def forward(self, states, strategies, mode):
+    def forward(self, states: Tensor, strategies: Tensor, mode: str) -> Tensor:
         assert len(states.shape) == 2 and states.shape[1] == self.state_dim
         assert len(strategies.shape) == 2 and strategies.shape[1] == self.strategy_dim
         assert mode in [SEARCH_MODE, BACKPROP_MODE]

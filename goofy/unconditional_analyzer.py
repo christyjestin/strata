@@ -1,10 +1,10 @@
 import torch
-from torch import nn
+from torch import nn, Tensor
 
 from model_constants import *
 
 class UnconditionalAnalyzer(nn.Module):
-    def __init__(self, embedding_dim = 10, num_heads = 2):
+    def __init__(self, embedding_dim: int = 10, num_heads: int = 2) -> None:
         super().__init__()
         self.state_dim = STATE_DIM
         self.action_dim = ACTION_DIM
@@ -21,7 +21,7 @@ class UnconditionalAnalyzer(nn.Module):
         # attends player tokens to all tokens (including themselves)
         self.attn = nn.MultiheadAttention(self.embedding_dim, num_heads = num_heads, batch_first = True)
 
-    def forward(self, states):
+    def forward(self, states: Tensor) -> Tensor:
         assert len(states.shape) == 2 and states.shape[1] == self.state_dim
 
         n = states.shape[0] # batch size
@@ -47,5 +47,5 @@ class UnconditionalAnalyzer(nn.Module):
         q = projected_player_tokens
         kv = torch.cat((projected_player_tokens, projected_weapon_tokens), dim = 1) # n x (2 + 2w) x e
         # attend player tokens to every token (including weapons)
-        output = self.attn(q, kv, kv, need_weights = False) # n x 2 x e
+        output: Tensor = self.attn(q, kv, kv, need_weights = False) # n x 2 x e
         return output.reshape(n, -1) # flatten attn outputs

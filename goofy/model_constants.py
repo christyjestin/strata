@@ -1,4 +1,5 @@
-from collections import namedtuple
+from typing import NamedTuple
+from torch import Tensor
 
 # position (2), orientation as sin and cos (2), cooldown timers for shield and blast attack (2), one hot of mode (3)
 NUM_PLAYER_MODES = 3
@@ -41,11 +42,11 @@ STRATEGY_DIM = 20
 
 TIME_HORIZON = 20 # TODO: change after discussing with Jacob
 
-EvolverLoss = namedtuple('EvolverLoss', ['player_token', 'weapon_token', 'opponent_health'])
+EvolverLoss = NamedTuple('EvolverLoss', [('player_token', float), ('weapon_token', float), ('opponent_health', float)])
 
-ActionPolicy = namedtuple('ActionPolicy', ['logits', 'beta_parameters'])
+ActionPolicy = NamedTuple('ActionPolicy', [('logits', Tensor), ('beta_parameters', Tensor)])
 
-Strategy = namedtuple('Strategy', ['hidden', 'cell'])
+Strategy = NamedTuple('Strategy', [('hidden', Tensor), ('cell', Tensor)])
 
 SEARCH_MODE = 'search_mode'
 BACKPROP_MODE = 'backprop_mode'
