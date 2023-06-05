@@ -1,204 +1,164 @@
-from collections import namedtuple
-from enum import Enum
 import numpy as np
-import math
+import torch
 
-GameState = namedtuple('GameState', ['stop', 'win'])
-
-TIMESTEPS_PER_SEC = 30
-TIMESTEP_LENGTH = 1 / TIMESTEPS_PER_SEC
-
-class Mode(Enum):
-    NORMAL = 1
-    ATTACKING = 2
-    SHIELDING = 3
-    # STUNNED = 4
-
-class Attacks(Enum):
-    STAB = 1
-    SWEEP = 2
-    BLAST = 3
-
-def stabbing_trajectory_maker(num_timesteps, length, width, numpoints, separation):
-    points = np.linspace(0, 1, int(num_timesteps / 2) + 1) * length
-    points = list(points)
-    points += points[::-1]
-    points = np.array(points)
-
-    y_offset_high = np.zeros_like(points) + width / 2
-    y_offset_low = np.zeros_like(points) - width / 2
-
-    pointshigh = np.vstack((points, y_offset_high)).T
-    pointslow = np.vstack((points, y_offset_low)).T
-    allPoints = [pointshigh, pointslow]
-
-    for i in range (numpoints - 1):
-        newpointshigh = np.vstack((points + (i + 1) * separation, y_offset_high)).T
-        newpointslow = np.vstack((points + (i + 1) * separation, y_offset_low)).T
-        allPoints.append(newpointshigh)
-        allPoints.append(newpointslow)
-    return np.array(allPoints)
-
-def circular_trajectory_maker(num_timesteps, radius, numpoints, separation):
-    angles = np.linspace(0, 3/2 * np.pi, num_timesteps + 1)
-    allPoints = []
-    for i in range(numpoints):
-        shifted_angles = np.roll(angles, -i * separation) 
-        x_shifted = radius * np.cos(shifted_angles)
-        y_shifted = radius * np.sin(shifted_angles)
-        newpoints = np.vstack((x_shifted, y_shifted)).T
-        allPoints.append(newpoints)
-    return np.array(allPoints)
+from game_constants import *
+from model_constants import *
+from game_helpers import *
 
 class Attack:
-    def __init__(self, damage, length, trajectory):
+    def __init__(self, attack_type: AttackType, damage, duration, trajectory):
+        self.attack_type = attack_type
         self.damage = damage
-        self.length = length
+        self.duration = duration
         self.time_step = 0
         self.trajectory = trajectory
-        self.position = trajectory[:, 0]
+        self.position = self.trajectory[self.time_step]
 
     def one_step(self):
-        # Attack ends
-        if self.time_step == self.length:
-            self.time_step = 0
-            self.position = self.trajectory[:, 0]
-            return True
-
-        # Else Attack follows trajectory
         self.time_step += 1
-        self.position = self.trajectory[:, self.time_step]
-        return False
+        # end attack when timestep has reached duration
+        if self.time_step == self.duration:
+            return DONE
+        self.position = self.trajectory[self.time_step]
 
+    def restart(self):
+        self.time_step = 0
+        self.position = self.trajectory[self.time_step]
 
-STAB_TRAJECTORY = stabbing_trajectory_maker(50, 30, 6, 8, 5)
-SWEEP_TRAJECTORY = circular_trajectory_maker(75, 80, 10, 3)
-BLAST_TRAJECTORY = stabbing_trajectory_maker(120, 1200, 20, 5, 5)
-
-STAB_ATTACK = Attack(0.1, 50, STAB_TRAJECTORY)
-BLAST_ATTACK = Attack(5, 60, BLAST_TRAJECTORY)
-SWEEP_TRAJECTORY = Attack(0.2, 50, SWEEP_TRAJECTORY)
-
-class Game:
-    arena_length = 1920
-    arena_width = 960
-
-    def __init__(self, hero, adversary, round_length):
-        self.hero = hero
-        self.adversary = adversary
-        self.round_length = round_length
-        self.time_left = round_length
-
-        # Gamestate vector is length of round, initially empty
-        # total length = round_length ( in seconds) * TIMESTEPS_PER_SEC
-        self.game_state_list = []
-
-
-    def one_step(self):
-        self.hero.one_step()
-        self.adversary.one_step()
-        self.calculate_damage()
-
-        # check for win
-        if self.adversary.health <= 0:
-            return GameState(stop = True, win = True)
-        # check for loss
-        if self.hero.health <= 0:
-            return GameState(stop = True, win = False)
-        return GameState(stop = False, win = True)
-
-# Damage calculation is currently a radial distance estimate
-    def calculate_damage(self):
-        hero_pos = self.hero.position
-        adversary_pos = self.adversary.position
-
-        hero_distance = np.linalg.norm(hero_pos - self.adversary.damagepoints, axis=1)
-        adversary_distance = np.linalg.norm(adversary_pos - self.hero.damagepoints, axis=1)
-        print(adversary_distance)
-        # Hero takes damage
-        if (np.min(hero_distance) < self.hero.hitbox_width - 15):
-            self.hero.health -= self.adversary.damage
-        # Adversary takes damage
-        if (np.min(adversary_distance) < self.adversary.hitbox_width - 15):
-            self.adversary.health -= self.hero.damage
-            print(self.hero.health)
-
-# ALL HITBOXES ARE ADDED TO PLAYER POSITION! so if players position 
-# is [0,0] hitbox extends from [0,0] to [width, height]
 class Player:
-    mode = Mode.NORMAL
+    def __init__(self, hitbox: Hitbox, starting_health, position, theta, stab_attack, blast_attack, sweep_attack, 
+                 shield_cooldown_time, blast_cooldown_time, shield_duration):
+        assert isinstance(position, np.ndarray) and position.shape == (2,), "position must be a numpy array of length 2"
+        assert (0 <= position[0] < ARENA_LENGTH) and (0 <= position[1] < ARENA_WIDTH), \
+                                                                    "position must be within the arena map"
+        assert isinstance(theta, float) and 0 <= theta < 2 * np.pi, "theta must be in the range [0, 2pi)"
 
-    def __init__(self, hitbox, max_movement_speed, max_rotation_speed, max_health, position, theta, arena_width, 
-                 arena_length, is_hero = False):
-        self.hitbox_width = hitbox['width']
-        self.hitbox_height = hitbox['height']
-        self.max_health = max_health
-        self.health = max_health
+        self.hitbox = hitbox
+        self.health = starting_health
         self.position = position
         self.theta = theta
-        self.max_movement_speed = max_movement_speed
-        self.max_rotation_speed = max_rotation_speed
-        self.shieldcooldown = 0
-        self.arena_length = arena_length
-        self.arena_width = arena_width
-        self.mode = Mode.NORMAL
+        self.mode = Mode.NORMAL_MODE
 
-        self.Attack = None
-        self.damagepoints = np.array([self.position])
-        self.damage = 0
-        self.is_hero = is_hero
+        # cooldown timers
+        self.shield_cooldown_timer = 0
+        self.blast_cooldown_timer = 0
+        self.shield_cooldown_time = shield_cooldown_time
+        self.blast_cooldown_time = blast_cooldown_time
 
-    def one_step(self):
-        # Player chooses movement and attack/defensive action
-        # self.position = self.position + (np.random.rand(2) - 0.5)
-        if not self.is_hero:
-            self.theta = self.theta + 1
+        # shield variables
+        self.shield_time_left = 0
+        self.shield_duration = shield_duration
 
-        if self.theta > 360:
-            self.theta -= 360
+        # attack variables
+        self.attack: Attack = None
+        self.attack_map = {
+            AttackType.STAB_ATTACK: stab_attack,
+            AttackType.BLAST_ATTACK: blast_attack,
+            AttackType.SWEEP_ATTACK: sweep_attack
+        }
+        assert len(self.attack_map.keys()) == len(AttackType)
 
-        if self.theta < -360:
-            self.theta += 360
+    def connect_opponent(self, opponent):
+        self.opponent = opponent
 
-        theta_radians = np.pi* self.theta / (180)
-        rot = np.array([[math.cos(-theta_radians), -math.sin(-theta_radians)], 
-                        [math.sin(-theta_radians), math.cos(-theta_radians)]])
+    def one_step(self, action):
+        # update timers
+        if self.shield_cooldown_timer != 0:
+            self.shield_cooldown_timer -= 1
+        if self.blast_cooldown_timer != 0:
+            self.blast_cooldown_timer -= 1
 
+        # update modes
+        if self.mode == Mode.SHIELD_MODE:
+            self.shield_time_left -= 1
+            # turn shield off and return to normal mode
+            if self.shield_time_left == 0:
+                self.shield_cooldown_timer = self.shield_cooldown_time
+                self.mode == Mode.NORMAL_MODE
+        elif self.mode == Mode.ATTACK_MODE:
+            # end attack and return to normal mode if done - otherwise progress the attack
+            if self.attack.one_step() == DONE:
+                # set cooldown timer if the completed attack was a blast attack
+                if self.attack.attack_type == AttackType.BLAST_ATTACK:
+                    self.blast_cooldown_timer = self.blast_cooldown_time
+                self.mode == Mode.NORMAL_MODE
+                self.attack = None
 
-        # Mode Stuff
-        if self.mode == Mode.ATTACKING:
-            self.damage = self.Attack.damage
-            damagepoints = self.Attack.position
-            damagepoints = (rot @ damagepoints.T).T
+        # process movement
+        dx, dy, sin, cos = action[-NUM_MOVEMENT_VALS:]
+        self.position += np.array([dx, dy])
+        self.theta += np.arctan2(sin, cos)
+        self.theta = self.theta % (2 * np.pi)
 
-            self.damagepoints = self.position + damagepoints +  0 # potentially add offset
+        # process action
+        action_type = np.argmax(action[:NUM_ACTIONS])
+        is_legal_action = True
+        # must be in normal mode to start shielding or attacking
+        if self.mode != Mode.NORMAL_MODE:
+            if action_type != DO_NOTHING_INDEX:
+                is_legal_action = False
+        else:
+            if action_type < NUM_ATTACKS:
+                self.mode = Mode.ATTACK_MODE
+                self.attack: Attack = self.attack_map[AttackType(action_type)]
+                self.attack.restart()
+            elif action_type == SHIELD_INDEX:
+                self.mode == Mode.SHIELD_MODE
+                self.shield_time_left = self.shield_duration
 
-            done_attacking = self.Attack.one_step()
+        self.opponent.calculate_damage() # calculate damage for opponent
+        return LEGAL_ACTION if is_legal_action else ILLEGAL_ACTION
 
-            if done_attacking:
-                self.mode = Mode.NORMAL
-                self.damagepoints = np.array([self.position])
+    def calculate_damage(self):
+        pass
 
-        if self.mode == Mode.NORMAL:
-            self.damagepoints = np.array([self.position])
-            self.damage = 0
+    def pack_player_state(self) -> torch.Tensor:
+        health = torch.tensor([self.health])
 
-            # if choose to attack....
-            self.Attack = STAB_ATTACK # model input
-            self.mode = Mode.ATTACKING
+        # construct player token, which is made up of position (2), orientation as sin and cos (2), 
+        # cooldown timers for shield and blast attack (2), one hot of mode (3)
+        orientation = np.array([np.cos(self.theta), np.sin(self.theta)])
+        timers = np.array([self.shield_cooldown_timer, self.blast_cooldown_timer])
+        mode = one_hot(num_classes = NUM_PLAYER_MODES, class_index = self.mode.value)
+        player_token = np.concatenate([self.position, orientation, timers, mode])
 
-            # if choose to shield...
-            # self.mode = Mode.SHIELDING
+        # construct weapon tokens
+        if self.mode == Mode.ATTACK_MODE:
+            # weapon token is position (2), damage (1), one hot of type (3)
+            damage = np.array([self.attack.damage])
+            attack_type = one_hot(num_classes = NUM_ATTACKS, class_index = self.attack.attack_type.value)
+            weapon_info = np.tile(np.concatenate((damage, attack_type)), (NUM_WEAPON_TOKENS, 1))
+            weapon_tokens = np.concatenate((self.attack.position, weapon_info), axis = 1).flatten()
+        else:
+            weapon_tokens = np.zeros(NUM_WEAPON_TOKENS * WEAPON_TOKEN_LENGTH)
 
+        output = torch.cat((health, player_token, weapon_tokens))
+        assert output.shape == (sum(STATE_SPLIT),)
+        return output
 
-Default_Hitbox = {
-    'width': 32,
-    'height': 32
-}
+class Game:
+    def __init__(self, hero: Player, adversary: Player, round_length) -> None:
+        self.hero = hero
+        self.adversary = adversary
+        self.hero.connect_opponent(adversary)
+        self.adversary.connect_opponent(hero)
+        self.time_left = round_length
 
-hero = Player(Default_Hitbox, 1, 1, 100, np.array([600, 300]), 0, 1920, 960, True)
-adversary = Player(Default_Hitbox, 1, 1, 100, np.array([600, 600]), 0, 1920, 960)
-game = Game(hero, adversary, 10)
+    def tick(self):
+        self.time_left -= 1
+        # check for time running out
+        if self.time_left == 0:
+            health_diff = self.hero.health - self.adversary.health
+            return GameState(stop = True, win = (health_diff >= 0), time_left = self.time_left)
+        # check for win
+        if self.adversary.health <= 0:
+            return GameState(stop = True, win = True, time_left = self.time_left)
+        # check for loss
+        if self.hero.health <= 0:
+            return GameState(stop = True, win = False, time_left = self.time_left)
+        return GameState(stop = False, win = True, time_left = self.time_left)
 
-game.one_step()
-game.one_step()
+    def pack_game_state(self, for_adversary: bool):
+        a = self.hero.pack_player_state()
+        b = self.adversary.pack_player_state()
+        return torch.cat((b, a)) if for_adversary else torch.cat((a, b))

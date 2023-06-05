@@ -22,6 +22,8 @@ assert len(PLAYER_TRIM_INDICES) == WEAPON_TOKEN_LENGTH, "trim indices must match
 assert len(PLAYER_TRIM_INDICES) <= PLAYER_TOKEN_LENGTH, "trim indices must be compatible with player token length"
 
 NUM_ATTACKS = 3
+SHIELD_INDEX = NUM_ATTACKS
+DO_NOTHING_INDEX = SHIELD_INDEX + 1
 # shield(1), do nothing(1)
 NUM_ACTIONS = NUM_ATTACKS + 1 + 1
 # change in position (2), change in orientation as sin and cos (2)

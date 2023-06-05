@@ -31,9 +31,14 @@ def upscale_to_limits(vals: Tensor, limit: float) -> Tensor:
     return 2 * limit * (vals - 0.5)
 
 class STRATA(nn.Module):
-    # TODO: add checks on init parameters
+    # TODO: add no time to think mode
     def __init__(self, search_depth: int, trajectory_count: int, branching_number: int, bloom_factor: int) -> None:
         super().__init__()
+        assert isinstance(search_depth, int) and search_depth > 1, "search depth must be greater than 1"
+        assert isinstance(trajectory_count, int) and trajectory_count > 0, "trajectory count must be positive"
+        assert isinstance(branching_number, int) and branching_number > 0, "branching number must be positive"
+        assert isinstance(bloom_factor, int) and bloom_factor > 0, "bloom factor must be positive"
+
         self.state_dim = STATE_DIM
         self.action_dim = ACTION_DIM
         self.strategy_dim = STRATEGY_DIM
