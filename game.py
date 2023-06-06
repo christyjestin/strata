@@ -7,31 +7,31 @@ from model_constants import *
 from game_helpers import *
 
 class Attack:
-    def __init__(self, attack_type: AttackType, damage, duration, trajectory: np.ndarray, moves_with_player):
-        assert trajectory.shape == (duration, NUM_WEAPON_TOKENS, 2)
-
+    def __init__(self, attack_type: AttackType, damage, duration, trajectory_maker, moves_with_player):
         self.attack_type = attack_type
         self.damage = damage
         self.duration = duration
         self.time_step = 0
-        self.trajectory = trajectory
-        self.position = self.trajectory[self.time_step]
+        self.trajectory_maker = trajectory_maker
         self.moves_with_player = moves_with_player # e.g. blast attack doesn't move with player
 
-    def one_step(self, player_position = None):
-        assert not self.moves_with_player or player_position is not None, \
-                                "player_position is required if the attack moves with the player"
+    def one_step(self, player_position = None, player_angle = None):
+        if self.moves_with_player:
+            assert player_position is not None and player_angle is not None, \
+                                "player position and angle are required if the attack moves with the player"
         self.time_step += 1
         # end attack when timestep has reached duration
         if self.time_step == self.duration:
             return DONE
-        pos = player_position if self.moves_with_player else self.player_starting_position
-        self.position = pos + self.trajectory[self.time_step]
+        # need to update trajectory if the attack moves with the player
+        if self.moves_with_player:
+            self.trajectory = self.trajectory_maker(player_position, player_angle)
+        self.position = self.trajectory[self.time_step]
 
-    def restart(self, player_position):
+    def restart(self, player_position, player_angle):
         self.time_step = 0
-        self.player_starting_position = player_position
-        self.position = self.player_starting_position + self.trajectory[self.time_step]
+        self.trajectory = self.trajectory_maker(player_position, player_angle)
+        self.position = self.trajectory[self.time_step]
 
 class Player:
     def __init__(self, hitbox: Hitbox, starting_health, position, theta, stab_attack, blast_attack, sweep_attack, 
@@ -77,6 +77,13 @@ class Player:
         if self.blast_cooldown_timer != 0:
             self.blast_cooldown_timer -= 1
 
+        # process movement; n.b. movement must be processed before we update modes because
+        # the new position is used in the attack progression
+        dx, dy, sin, cos = action[-NUM_MOVEMENT_VALS:]
+        self.position += np.array([dx, dy])
+        self.theta += np.arctan2(sin, cos)
+        self.theta = self.theta % (2 * np.pi)
+
         # update modes
         if self.mode == Mode.SHIELD_MODE:
             self.shield_time_left -= 1
@@ -85,22 +92,19 @@ class Player:
                 self.shield_cooldown_timer = self.shield_cooldown_time
                 self.mode == Mode.NORMAL_MODE
         elif self.mode == Mode.ATTACK_MODE:
-            # blast attack is relative to the player's starting position
-            # stab and sweep are relative to current position
-            arg = self.position if self.attack.attack_type != AttackType.BLAST_ATTACK else None
+            # blast attack is relative to the player's starting position whereas stab and sweep 
+            # are relative to the player's current position, so the function arguments differ
+            if self.attack.moves_with_player:
+                attack_status = self.attack.one_step(self.position, self.theta)
+            else:
+                attack_status = self.attack.one_step()
             # end attack and return to normal mode if done - otherwise progress the attack
-            if self.attack.one_step(arg) == DONE:
+            if attack_status == DONE:
                 # set cooldown timer if the completed attack was a blast attack
                 if self.attack.attack_type == AttackType.BLAST_ATTACK:
                     self.blast_cooldown_timer = self.blast_cooldown_time
                 self.mode = Mode.NORMAL_MODE
                 self.attack = None
-
-        # process movement
-        dx, dy, sin, cos = action[-NUM_MOVEMENT_VALS:]
-        self.position += np.array([dx, dy])
-        self.theta += np.arctan2(sin, cos)
-        self.theta = self.theta % (2 * np.pi)
 
         # process action
         action_type = np.argmax(action[:NUM_ACTIONS])
@@ -113,7 +117,7 @@ class Player:
             if action_type < NUM_ATTACKS:
                 self.mode = Mode.ATTACK_MODE
                 self.attack: Attack = self.attack_map[AttackType(action_type)]
-                self.attack.restart(self.position)
+                self.attack.restart(self.position, self.theta)
             elif action_type == SHIELD_INDEX:
                 self.mode == Mode.SHIELD_MODE
                 self.shield_time_left = self.shield_duration
