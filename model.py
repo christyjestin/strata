@@ -31,7 +31,6 @@ def upscale_to_limits(vals: Tensor, limit: float) -> Tensor:
     return 2 * limit * (vals - 0.5)
 
 class STRATA(nn.Module):
-    # TODO: add no time to think mode
     def __init__(self, search_depth: int, trajectory_count: int, branching_number: int, bloom_factor: int) -> None:
         super().__init__()
         assert isinstance(search_depth, int) and search_depth > 1, "search depth must be greater than 1"
@@ -128,6 +127,21 @@ class STRATA(nn.Module):
 
         best_initial_action_index: int = initial_action_idx_for_candidates[best_trajectory_index]
         return candidate_initial_actions[best_initial_action_index]
+
+    # the difference between this function and the forward call is that this function only predicts the immediate
+    # next state to evaluate actions (as opposed to doing a longer rollout); this is effectively just search_depth = 1
+    # n.b. it is not recommended to use the output of this function for backpropagation since it doesn't do any rollout
+    @torch.no_grad()
+    def no_time_to_think(self, s_t: Tensor, adversary_pair: Optional[Tuple[Tensor, Tensor]] = None) -> Tensor:
+        s_t = s_t.reshape(1, self.state_dim) # state needs to be 2d for later functions
+
+        # only update adversary strategy with true adversary state and action (i.e. outside of tree search)
+        if adversary_pair is not None:
+            self.adversary_strategy = self.strategy_distiller(self.adversary_strategy, *adversary_pair, 
+                                                              mode = SEARCH_MODE)
+
+        _, candidate_actions, candidate_values = self.expand_search_tree(s_t, s_t, depth = 0)
+        return candidate_actions[torch.argsort(candidate_values, descending = True)[0]]
 
     # expands the search tree by one level
     def expand_search_tree(self, initial_state: Tensor, states: Tensor, depth: int) -> Tuple[Tensor, Tensor, Tensor]:
