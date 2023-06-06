@@ -34,8 +34,7 @@ class Attack:
         self.position = self.trajectory[self.time_step]
 
 class Player:
-    def __init__(self, hitbox: Hitbox, starting_health, position, theta, stab_attack, blast_attack, sweep_attack, 
-                 shield_cooldown_time, blast_cooldown_time, shield_duration):
+    def __init__(self, hitbox: Hitbox, starting_health, position, theta, stab_attack, blast_attack, sweep_attack):
         assert isinstance(position, np.ndarray) and position.shape == (2,), "position must be a numpy array of length 2"
         assert (0 <= position[0] < ARENA_LENGTH) and (0 <= position[1] < ARENA_WIDTH), \
                                                                     "position must be within the arena map"
@@ -50,12 +49,9 @@ class Player:
         # cooldown timers
         self.shield_cooldown_timer = 0
         self.blast_cooldown_timer = 0
-        self.shield_cooldown_time = shield_cooldown_time
-        self.blast_cooldown_time = blast_cooldown_time
 
         # shield variables
         self.shield_time_left = 0
-        self.shield_duration = shield_duration
 
         # attack variables
         self.attack: Attack = None
@@ -89,7 +85,7 @@ class Player:
             self.shield_time_left -= 1
             # turn shield off and return to normal mode
             if self.shield_time_left == 0:
-                self.shield_cooldown_timer = self.shield_cooldown_time
+                self.shield_cooldown_timer = SHIELD_COOLDOWN_TIME
                 self.mode == Mode.NORMAL_MODE
         elif self.mode == Mode.ATTACK_MODE:
             # blast attack is relative to the player's starting position whereas stab and sweep 
@@ -102,7 +98,7 @@ class Player:
             if attack_status == DONE:
                 # set cooldown timer if the completed attack was a blast attack
                 if self.attack.attack_type == AttackType.BLAST_ATTACK:
-                    self.blast_cooldown_timer = self.blast_cooldown_time
+                    self.blast_cooldown_timer = BLAST_COOLDOWN_TIME
                 self.mode = Mode.NORMAL_MODE
                 self.attack = None
 
@@ -120,7 +116,7 @@ class Player:
                 self.attack.restart(self.position, self.theta)
             elif action_type == SHIELD_INDEX:
                 self.mode == Mode.SHIELD_MODE
-                self.shield_time_left = self.shield_duration
+                self.shield_time_left = SHIELD_DURATION
 
         if self.mode == Mode.ATTACK_MODE:
             self.opponent.calculate_damage(self.attack.position, self.attack.damage) # calculate damage for opponent

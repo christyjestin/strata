@@ -27,3 +27,8 @@ class AttackType(Enum):
 
 assert len(Mode) == NUM_PLAYER_MODES
 assert len(AttackType) == NUM_ATTACKS
+
+# TODO: update times after thinking about timesteps per sec
+SHIELD_COOLDOWN_TIME = 10
+BLAST_COOLDOWN_TIME = 10
+SHIELD_DURATION = 10
