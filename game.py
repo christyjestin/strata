@@ -1,29 +1,37 @@
 import numpy as np
 import torch
+from typing import Tuple
 
 from game_constants import *
 from model_constants import *
 from game_helpers import *
 
 class Attack:
-    def __init__(self, attack_type: AttackType, damage, duration, trajectory):
+    def __init__(self, attack_type: AttackType, damage, duration, trajectory: np.ndarray, moves_with_player):
+        assert trajectory.shape == (duration, NUM_WEAPON_TOKENS, 2)
+
         self.attack_type = attack_type
         self.damage = damage
         self.duration = duration
         self.time_step = 0
         self.trajectory = trajectory
         self.position = self.trajectory[self.time_step]
+        self.moves_with_player = moves_with_player # e.g. blast attack doesn't move with player
 
-    def one_step(self):
+    def one_step(self, player_position = None):
+        assert not self.moves_with_player or player_position is not None, \
+                                "player_position is required if the attack moves with the player"
         self.time_step += 1
         # end attack when timestep has reached duration
         if self.time_step == self.duration:
             return DONE
-        self.position = self.trajectory[self.time_step]
+        pos = player_position if self.moves_with_player else self.player_starting_position
+        self.position = pos + self.trajectory[self.time_step]
 
-    def restart(self):
+    def restart(self, player_position):
         self.time_step = 0
-        self.position = self.trajectory[self.time_step]
+        self.player_starting_position = player_position
+        self.position = self.player_starting_position + self.trajectory[self.time_step]
 
 class Player:
     def __init__(self, hitbox: Hitbox, starting_health, position, theta, stab_attack, blast_attack, sweep_attack, 
@@ -58,7 +66,8 @@ class Player:
         }
         assert len(self.attack_map.keys()) == len(AttackType)
 
-    def connect_opponent(self, opponent):
+    # type hint is a string literal because this is a forward reference within the same class
+    def connect_opponent(self, opponent: 'Player'):
         self.opponent = opponent
 
     def one_step(self, action):
@@ -76,12 +85,15 @@ class Player:
                 self.shield_cooldown_timer = self.shield_cooldown_time
                 self.mode == Mode.NORMAL_MODE
         elif self.mode == Mode.ATTACK_MODE:
+            # blast attack is relative to the player's starting position
+            # stab and sweep are relative to current position
+            arg = self.position if self.attack.attack_type != AttackType.BLAST_ATTACK else None
             # end attack and return to normal mode if done - otherwise progress the attack
-            if self.attack.one_step() == DONE:
+            if self.attack.one_step(arg) == DONE:
                 # set cooldown timer if the completed attack was a blast attack
                 if self.attack.attack_type == AttackType.BLAST_ATTACK:
                     self.blast_cooldown_timer = self.blast_cooldown_time
-                self.mode == Mode.NORMAL_MODE
+                self.mode = Mode.NORMAL_MODE
                 self.attack = None
 
         # process movement
@@ -101,16 +113,52 @@ class Player:
             if action_type < NUM_ATTACKS:
                 self.mode = Mode.ATTACK_MODE
                 self.attack: Attack = self.attack_map[AttackType(action_type)]
-                self.attack.restart()
+                self.attack.restart(self.position)
             elif action_type == SHIELD_INDEX:
                 self.mode == Mode.SHIELD_MODE
                 self.shield_time_left = self.shield_duration
 
-        self.opponent.calculate_damage() # calculate damage for opponent
+        if self.mode == Mode.ATTACK_MODE:
+            self.opponent.calculate_damage(self.attack.position, self.attack.damage) # calculate damage for opponent
         return LEGAL_ACTION if is_legal_action else ILLEGAL_ACTION
 
-    def calculate_damage(self):
-        pass
+    # calculate damage inflicted to this player and update health
+    def calculate_damage(self, weapon_x: np.ndarray, damage):
+        # no damage if you have your shield up
+        if self.mode == Mode.SHIELD_MODE:
+            return
+        # inflict damage for every point in the weapon that is in contact with the player
+        A, b = self.compute_hitbox_constraint()
+        is_point_in_contact = np.all(A @ weapon_x.T <= b.reshape(-1, 1), axis = 0)
+        self.health -= damage * np.sum(is_point_in_contact)
+
+    # compute the hitbox of the player by generating matrix A and vector b 
+    # such that a point x is in the hitbox iff Ax <= b
+    def compute_hitbox_constraint(self) -> Tuple[np.ndarray, np.ndarray]:
+        m_vert = np.tan(self.theta + np.pi / 2) # slope of original left and right (i.e. vertical) sides
+        m_hoz = np.tan(self.theta) # slope of original top and bottom (i.e. horizontal) sides
+        # A encodes either -mx + y \leq b (under a line) or mx - y \leq -b (above a line)
+        A = np.column_stack((np.array([-m_vert, m_vert, -m_hoz, m_hoz]), np.array([1, -1, 1, -1])))
+
+        width, height = self.hitbox
+        # left, right, top, and bottom are the halfway points on the respective sides
+        # we'll use them to compute the y-intercept for the lines that go through each of these sides
+        half_width_vector = np.array([np.cos(self.theta), np.sin(self.theta)]) * width / 2
+        left = self.position - half_width_vector
+        right = self.position + half_width_vector
+        half_height_vector = np.array([np.cos(self.theta + np.pi / 2), np.sin(self.theta + np.pi / 2)]) * height / 2
+        top = self.position + half_height_vector
+        bottom = self.position - half_height_vector
+
+        # the left or right side could be on top depending on the angle of rotation; since the slopes are the same,
+        # we simply compute the y-intercepts and say that we want to be below the line with the higher intercept and
+        # above the line with the lower intercept; same deal with top and bottom points
+        left_right_b = np.sort(np.array([-m_vert, 1]) @ np.column_stack([left, right]))[::-1]
+        top_bottom_b = np.sort(np.array([-m_hoz, 1]) @ np.column_stack([top, bottom]))[::-1]
+        b = np.concatenate((left_right_b, top_bottom_b)) * np.array([1, -1, 1, -1])
+
+        assert A.shape == (4, 2) and b.shape == (4,)
+        return A, b
 
     def pack_player_state(self) -> torch.Tensor:
         health = torch.tensor([self.health])
@@ -144,19 +192,21 @@ class Game:
         self.adversary.connect_opponent(hero)
         self.time_left = round_length
 
+    def health_diff(self):
+        return self.hero.health - self.adversary.health
+
     def tick(self):
         self.time_left -= 1
         # check for time running out
         if self.time_left == 0:
-            health_diff = self.hero.health - self.adversary.health
-            return GameState(stop = True, win = (health_diff >= 0), time_left = self.time_left)
-        # check for win
+            return GameState(game_over = True, won = (self.health_diff() >= 0), time_left = self.time_left)
+        # check for won
         if self.adversary.health <= 0:
-            return GameState(stop = True, win = True, time_left = self.time_left)
+            return GameState(game_over = True, won = True, time_left = self.time_left)
         # check for loss
         if self.hero.health <= 0:
-            return GameState(stop = True, win = False, time_left = self.time_left)
-        return GameState(stop = False, win = True, time_left = self.time_left)
+            return GameState(game_over = True, won = False, time_left = self.time_left)
+        return GameState(game_over = False, won = True, time_left = self.time_left)
 
     def pack_game_state(self, for_adversary: bool):
         a = self.hero.pack_player_state()

@@ -5,7 +5,7 @@ from model_constants import *
 ARENA_LENGTH = 1920
 ARENA_WIDTH = 960
 
-GameState = namedtuple('GameState', ['stop', 'win'])
+GameState = namedtuple('GameState', ['game_over', 'won', 'time_left'])
 Hitbox = namedtuple('Hitbox', ['width', 'height'], defaults = [32, 32])
 
 TIMESTEPS_PER_SEC = 30
