@@ -8,6 +8,7 @@ from game_helpers import *
 
 class Attack:
     def __init__(self, attack_type: AttackType, damage, duration, trajectory_maker, moves_with_player):
+        assert duration > 0, "duration must be positive"
         self.attack_type = attack_type
         self.damage = damage
         self.duration = duration
@@ -15,23 +16,18 @@ class Attack:
         self.trajectory_maker = trajectory_maker
         self.moves_with_player = moves_with_player # e.g. blast attack doesn't move with player
 
-    def one_step(self, player_position = None, player_angle = None):
-        if self.moves_with_player:
-            assert player_position is not None and player_angle is not None, \
-                                "player position and angle are required if the attack moves with the player"
-        self.time_step += 1
-        # end attack when timestep has reached duration
-        if self.time_step == self.duration:
-            return DONE
+    def one_step(self, player_position, player_angle):
         # need to update trajectory if the attack moves with the player
         if self.moves_with_player:
             self.trajectory = self.trajectory_maker(player_position, player_angle)
         self.position = self.trajectory[self.time_step]
 
+        self.time_step += 1
+        return DONE if (self.time_step == self.duration) else INCOMPLETE
+
     def restart(self, player_position, player_angle):
         self.time_step = 0
         self.trajectory = self.trajectory_maker(player_position, player_angle)
-        self.position = self.trajectory[self.time_step]
 
 class Player:
     def __init__(self, hitbox: Hitbox, starting_health, position, theta, stab_attack, blast_attack, sweep_attack):
@@ -66,35 +62,54 @@ class Player:
     def connect_opponent(self, opponent: 'Player'):
         self.opponent = opponent
 
-    def one_step(self, action):
+    # n.b. the order of logic in one_step is really important: be very careful when making changes
+    def one_step(self, action: np.ndarray) -> LEGAL_ACTION | ILLEGAL_ACTION:
+        # process movement
+        dx, dy, sin, cos = action[-NUM_MOVEMENT_VALS:]
+        self.position += np.array([dx, dy])
+        self.theta += np.arctan2(sin, cos)
+        self.theta = self.theta % (2 * np.pi)
+
+        # process action
+        action_type = np.argmax(action[:NUM_ACTIONS])
+        is_legal_action = True
+        just_activated_shield = False
+        # must be in normal mode to start shielding or attacking
+        if self.mode == Mode.NORMAL_MODE:
+            # logic for attempting to start an attack
+            if action_type < NUM_ATTACKS:
+                attack_type = AttackType(action_type)
+                if attack_type == AttackType.BLAST_ATTACK and self.blast_cooldown_timer > 0:
+                    is_legal_action = False
+                else:
+                    self.mode = Mode.ATTACK_MODE
+                    self.attack: Attack = self.attack_map[attack_type]
+                    self.attack.restart(self.position, self.theta)
+            # logic for attempting to shield
+            elif action_type == SHIELD_INDEX:
+                if self.shield_cooldown_timer > 0:
+                    is_legal_action = False
+                else:
+                    self.mode == Mode.SHIELD_MODE
+                    self.shield_time_left = SHIELD_DURATION
+                    just_activated_shield = True
+        else:
+            # tried doing something while not in normal mode
+            if action_type != DO_NOTHING_INDEX:
+                is_legal_action = False
+
         # update timers
         if self.shield_cooldown_timer != 0:
             self.shield_cooldown_timer -= 1
         if self.blast_cooldown_timer != 0:
             self.blast_cooldown_timer -= 1
 
-        # process movement; n.b. movement must be processed before we update modes because
-        # the new position is used in the attack progression
-        dx, dy, sin, cos = action[-NUM_MOVEMENT_VALS:]
-        self.position += np.array([dx, dy])
-        self.theta += np.arctan2(sin, cos)
-        self.theta = self.theta % (2 * np.pi)
+        # progress attack and calculate damage
+        if self.mode == Mode.ATTACK_MODE:
+            attack_status = self.attack.one_step(self.position, self.theta)
+            self.opponent.calculate_damage(self.attack.position, self.attack.damage)
 
-        # update modes
-        if self.mode == Mode.SHIELD_MODE:
-            self.shield_time_left -= 1
-            # turn shield off and return to normal mode
-            if self.shield_time_left == 0:
-                self.shield_cooldown_timer = SHIELD_COOLDOWN_TIME
-                self.mode == Mode.NORMAL_MODE
-        elif self.mode == Mode.ATTACK_MODE:
-            # blast attack is relative to the player's starting position whereas stab and sweep 
-            # are relative to the player's current position, so the function arguments differ
-            if self.attack.moves_with_player:
-                attack_status = self.attack.one_step(self.position, self.theta)
-            else:
-                attack_status = self.attack.one_step()
-            # end attack and return to normal mode if done - otherwise progress the attack
+            # end attack and return to normal mode if done
             if attack_status == DONE:
                 # set cooldown timer if the completed attack was a blast attack
                 if self.attack.attack_type == AttackType.BLAST_ATTACK:
@@ -102,24 +117,14 @@ class Player:
                 self.mode = Mode.NORMAL_MODE
                 self.attack = None
 
-        # process action
-        action_type = np.argmax(action[:NUM_ACTIONS])
-        is_legal_action = True
-        # must be in normal mode to start shielding or attacking
-        if self.mode != Mode.NORMAL_MODE:
-            if action_type != DO_NOTHING_INDEX:
-                is_legal_action = False
-        else:
-            if action_type < NUM_ATTACKS:
-                self.mode = Mode.ATTACK_MODE
-                self.attack: Attack = self.attack_map[AttackType(action_type)]
-                self.attack.restart(self.position, self.theta)
-            elif action_type == SHIELD_INDEX:
-                self.mode == Mode.SHIELD_MODE
-                self.shield_time_left = SHIELD_DURATION
+        # progress shield (skip on first timestep)
+        if self.mode == Mode.SHIELD_MODE and not just_activated_shield:
+            self.shield_time_left -= 1
+            # turn shield off and return to normal mode
+            if self.shield_time_left == 0:
+                self.shield_cooldown_timer = SHIELD_COOLDOWN_TIME
+                self.mode == Mode.NORMAL_MODE
 
-        if self.mode == Mode.ATTACK_MODE:
-            self.opponent.calculate_damage(self.attack.position, self.attack.damage) # calculate damage for opponent
         return LEGAL_ACTION if is_legal_action else ILLEGAL_ACTION
 
     # calculate damage inflicted to this player and update health

@@ -73,10 +73,6 @@ class Evolver(nn.Module):
         self.player_token_L2_loss_weight = torch.tensor(PLAYER_L2_WEIGHT).reshape(1, -1)
         self.weapon_token_L2_loss_weight = torch.tensor(WEAPON_L2_WEIGHT).reshape(1, -1)
 
-        attn_models = [self.weapon_self_attn, self.weapon_to_player_attn, self.player_to_weapon_attn, self.player_self_attn]
-        MLP_models = [self.weapon_MLP, self.player_MLP, self.opponent_health_MLP]
-        all_models = [self.weapon_pos_embedding_module, *attn_models, *MLP_models]
-
     # predicts next state given current state and action
     def forward(self, states: Tensor, actions: Tensor, misaligned_dims: bool, is_adversary_step: bool, 
                 mode: str) -> Tensor:
